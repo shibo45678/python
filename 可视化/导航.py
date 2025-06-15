@@ -393,4 +393,4 @@ def update_overview_figures(selected_depts):
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=8050)
+    app.run(debug=True, port=8051)
