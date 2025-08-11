@@ -17,55 +17,28 @@ cache = {}  # 简单的内存缓存，实际生产环境Redis
 # -----------------------------------------------二. 生成全局数据(静态/低频）--------------------------------------------
 # 全局数据处理（应用启动时执行一次）
 def load_and_process_data():
-    # 生成四个卡片数据（暂定全静态）
-    card_data = [
-        {
-            "title": "营业收入（万元）",
-            "today": 101,
-            "yesterday": 12,
-            "month": 13,
-            "year": 123
-        },
-        {
-            "title": "营业成本（万元）",
-            "today": 101,
-            "yesterday": 12,
-            "month": 13,
-            "year": 123
-        },
-        {
-            "title": "利润（万元）",
-            "today": 101,
-            "yesterday": 12,
-            "month": 13,
-            "year": 123
-        },
-        {
-            "title": "毛利率（%）",
-            "today": 101,
-            "yesterday": 12,
-            "month": 13,
-            "year": 123
-        }
-    ]
+
     # 运营数据
     operational = pd.read_excel('/Users/shibo/pythonProject1/可视化/operational_data.xlsx', sheet_name='Sheet1')
     # KPI数据
     kpi = pd.read_excel('/Users/shibo/pythonProject1/可视化/KPI_tracking.xlsx', sheet_name='Sheet1')
+    departments = operational['所属事业部'].unique()
 
     return {
-        'card_data': card_data,
         'operational_data': operational,
         'kpi_data': kpi,
+        'departments':departments
 
     }
-
-
-processed_data = load_and_process_data()  # 初始化数据
+processed_data = load_and_process_data()  # 初始化静态数据
 
 
 def process_filter_data(selected_depts):
-    department = processed_data['kpi_data']['部门'].unique().tolist()
+    # 使用缓存避免重复计算
+    cache_key = f"all_data_{'-'.join(selected_depts)}"
+    if cache_key in cache:
+        return cache[cache_key]
+
     filtered_data_kpi_target = processed_data['kpi_data'][
         processed_data['kpi_data']['部门'].isin(selected_depts)]
 
@@ -88,35 +61,39 @@ def process_filter_data(selected_depts):
     mask_month_actual = (pd.to_datetime(
         filtered_data_actual['业务发生结算月份']).dt.year == current_year_month.year) & (pd.to_datetime(
         filtered_data_actual['业务发生结算月份']).dt.month == current_year_month.month)
-    monthly_income_actual = filtered_data_actual['总收入'][mask_month_actual].sum() / 10000  # 本月 收入
-    monthly_profit_actual = filtered_data_actual['总利润'][mask_month_actual].sum() / 10000  # 本月 利润
+    monthly_income_actual = round(filtered_data_actual['总收入'][mask_month_actual].sum() / 10000,2)  # 本月 收入
+    monthly_profit_actual = round(filtered_data_actual['总利润'][mask_month_actual].sum() / 10000 ,2) # 本月 利润
+    monthly_cost_actual = round(filtered_data_actual['总成本'][mask_month_actual].sum() / 10000 ,2) # 本月 成本
+    monthly_profit_ratio_actual = round((monthly_profit_actual / monthly_income_actual)*100,2) # 本月 利润率
 
     mask_year__actual = pd.to_datetime(filtered_data_actual['业务发生结算月份']).dt.year == current_year_month.year
-    yearly_income_actual = filtered_data_actual['总收入'][mask_year__actual].sum() / 10000  # 今年 收入
-    yearly_profit_actual = filtered_data_actual['总利润'][mask_year__actual].sum() / 10000  # 今年 利润
+    yearly_income_actual = round(filtered_data_actual['总收入'][mask_year__actual].sum() / 10000 ,2) # 今年 收入
+    yearly_profit_actual = round(filtered_data_actual['总利润'][mask_year__actual].sum() / 10000,2)  # 今年 利润
+    yearly_cost_actual = round(filtered_data_actual['总成本'][mask_year__actual].sum() / 10000,2)  # 今年 成本
+    yearly_profit_ratio_actual = round((yearly_profit_actual / yearly_income_actual)*100,2) # 今年 利润率
 
-    # 计算今日
+
+    # 卡片-计算今日
     mask_today_actual = (pd.to_datetime(
         filtered_data_actual['业务发生结算月份']).dt.year == current_year_month.year) & (pd.to_datetime(
         filtered_data_actual['业务发生结算月份']).dt.month == current_year_month.month) & (pd.to_datetime(
         filtered_data_actual['业务发生结算月份']).dt.day == current_year_month.day)
 
-    daily_income_actual = filtered_data_actual['总收入'][mask_today_actual].sum() / 10000
-    daily_cost_actual = filtered_data_actual['总成本'][mask_today_actual].sum() / 10000
-    daily_profit_actual = daily_income_actual - daily_cost_actual / 10000
-    daily_profit_ratio_actual = round((daily_profit_actual / daily_income_actual), 2)
+    daily_income_actual = round(filtered_data_actual['总收入'][mask_today_actual].sum() / 10000,2)
+    daily_cost_actual = round(filtered_data_actual['总成本'][mask_today_actual].sum() / 10000,2)
+    daily_profit_actual = round(daily_income_actual - daily_cost_actual,2)
+    daily_profit_ratio_actual = round((daily_profit_actual / daily_income_actual)*100, 2)
 
-    # 计算昨日
-    mask_yesterday_actual = (pd.to_datetime(
-        filtered_data_actual['业务发生结算月份']).dt.year == current_year_month.year) & (pd.to_datetime(
-        filtered_data_actual['业务发生结算月份']).dt.month == current_year_month.month) & (pd.to_datetime(
-        filtered_data_actual['业务发生结算月份']).dt.day - 1 == current_year_month.day - 1)
+    # 卡片 - 计算昨日  to_datetime 格式是timestamp，要么两边都转为timestamp，要么都转为datetime
+    mask_yesterday_actual = pd.to_datetime(filtered_data_actual['业务发生结算月份']).dt.date == (
+                current_year_month - timedelta(days=1))
+    yesterday_income_actual = round(filtered_data_actual['总收入'][mask_yesterday_actual].sum() / 10000,2)
+    yesterday_cost_actual = round(filtered_data_actual['总成本'][mask_yesterday_actual].sum() / 10000,2)
+    yesterday_profit_actual = round(yesterday_income_actual - yesterday_cost_actual,2)
+    yesterday_profit_ratio_actual = round((yesterday_profit_actual / yesterday_income_actual)*100,2)
 
-    yesterday_income_actual = filtered_data_actual['总收入'][mask_yesterday_actual].sum() / 10000
-    yesterday_cost_actual = filtered_data_actual['总成本'][mask_yesterday_actual].sum() / 10000
-    yesterday_profit_actual = yesterday_income_actual - yesterday_cost_actual / 10000
-    yesterday_profit_ratio_actual = round((yesterday_profit_actual / yesterday_income_actual), 2)
-
+    
+    # 首页面积图
     # 按月份分组汇总成本、毛利润、利润率、收入 (显示最近12个月）
     end_date = current_year_month + MonthEnd(0)
     start_date = end_date - relativedelta(months=11)
@@ -126,8 +103,8 @@ def process_filter_data(selected_depts):
 
     # 月份分组 带月份的DataFrame要变成对应的数值序列（即每个月的值）
     # 处理利润率分母为0 的情况(group后分组项month是索引，但reset_index()后，变成数据框，month是列）
-    valid_data = filtered_data_actual[~filtered_data_actual.loc[:,'总收入'].isin([0, np.nan])]
-    valid_data.loc[:, 'month'] = valid_data['业务发生结算月份'].str[0:7]
+    valid_data = filtered_data_actual[~filtered_data_actual.loc[:,'总收入'].isin([0, np.nan,None])].copy()
+    valid_data.loc[:, 'month'] = valid_data['业务发生结算月份'].str[0:7] # valid_data 新增列 month '%Y-%m'
 
     # 不加reset_index 保持Series 操作
     monthly_grouped_rev = valid_data.groupby(['month'])['总收入'].sum().reindex(months, fill_value=0)  # 确保所有月份存在  # series sort_index ,reset 成dataframe
@@ -143,7 +120,48 @@ def process_filter_data(selected_depts):
     monthly_grouped_pro_val = monthly_grouped_profit.reset_index()['总利润'] / 10000
     monthly_grouped_pro_rat_val = monthly_grouped_profit_ratio['利润率']
 
-    return {'monthly_income_target': monthly_income_target,
+    # 首页饼图
+    # 在 groupby(['month', '所属事业部']) 之后，对 多级索引（MultiIndex） 进行 reindex，
+    # 确保所有 month 和 事业部 的组合都存在，缺失的组合自动填充为 0。
+    # 构造完整索引
+    full_index = pd.MultiIndex.from_product([months,processed_data['departments']],names = ['month', '所属事业部'])
+    # 待补充数据    用完整索引 reindex，缺失值填充 0
+    grouped_month_dept_rev = valid_data.groupby(['month', '所属事业部'])['总收入'].sum().reindex(full_index, fill_value=0).reset_index()
+
+    card_data = [
+        {
+            "title": "营业收入（万元）",
+            "today": daily_income_actual,
+            "yesterday": yesterday_income_actual,
+            "month": monthly_income_actual,
+            "year": yearly_income_actual
+
+        },
+        {
+            "title": "营业成本（万元）",
+            "today": daily_cost_actual,
+            "yesterday": yesterday_cost_actual,
+            "month": monthly_cost_actual,
+            "year": yearly_cost_actual
+        },
+        {
+            "title": "利润（万元）",
+            "today": daily_profit_actual,
+            "yesterday": yesterday_profit_actual,
+            "month": monthly_profit_actual,
+            "year": yearly_profit_actual
+        },
+        {
+            "title": "毛利率（%）",
+            "today": daily_profit_ratio_actual,
+            "yesterday": yesterday_profit_ratio_actual,
+            "month": monthly_profit_ratio_actual,
+            "year": yearly_profit_ratio_actual
+        }
+    ]
+
+    result = {
+            'monthly_income_target': monthly_income_target,
             'monthly_profit_target': monthly_profit_target,
             'yearly_income_target': yearly_income_target,
             'yearly_profit_target': yearly_profit_target,
@@ -167,10 +185,13 @@ def process_filter_data(selected_depts):
             'monthly_grouped_rev_val': monthly_grouped_rev_val,
             'monthly_grouped_cost_val': monthly_grouped_cost_val,
             'monthly_grouped_pro_val': monthly_grouped_pro_val,
-            'monthly_grouped_pro_rat_val': monthly_grouped_pro_rat_val
-
+            'monthly_grouped_pro_rat_val': monthly_grouped_pro_rat_val,
+            'grouped_month_dept_rev':grouped_month_dept_rev,
+            'card_data': card_data
             }
-
+    # 缓存整个结果字典
+    cache[cache_key] = result
+    return result
 
 # -------------------------------------------- 三. 创建应用布局（筛选控件移到页签外）--------------------------------
 
@@ -217,11 +238,11 @@ styles = {
         'margin': dict(l=58, r=40, t=40, b=48)
     },
     'color': {
-        'red': '#F44336',
-        'yellow': '#FDD835',
         'green': '#7CB342',
         'gray': '#F0F0F0',  # 背景灰
-        'dark_gray': '#212121'
+        'dark_gray': '#212121',
+        'red': '#F44336',
+        'yellow': '#FDD835'
     }
 }
 
@@ -349,9 +370,8 @@ def create_combined_chart(months, cost_val, rev_val, pro_val, rat_val):
         mode='lines+text')  # 显示线和文本
 
     # 创建面积图布局
-
     layout = go.Layout(
-        title={'text': f'营收趋势（截至{months[0]})',
+        title={
                'font': {
                    'family': styles['sub_title']['family'],
                    'size': styles['sub_title']['fontSize'],
@@ -399,10 +419,13 @@ def create_combined_chart(months, cost_val, rev_val, pro_val, rat_val):
     }
 
 
+
 # 定义各个页面的布局
 
 def overview_layout(selected_depts):
-    cards = processed_data['card_data']  # 需要修改成响应筛选
+    cards_raw = process_filter_data(selected_depts)
+    cards = cards_raw['card_data']
+
     return html.Div([
         html.Div([
             html.H1("营收指标概览", style={"margin": "0", "marginTop": "20px"}),  # 大标题
@@ -610,10 +633,11 @@ def update_nav_styles(pathname):
      Output('yearly-income-progress', 'figure'),
      Output('yearly-profit-progress', 'figure'),
      Output('combined-chart', 'figure')],
-    [Input('dept-dropdown', 'value')]
+    [Input('dept-dropdown', 'value')],
 )
 def update_overview_figures(selected_depts):
     filtered_data = process_filter_data(selected_depts)
+    months = filtered_data['months']
 
     # 创建图表-进度条
     monthly_income_fig = create_progress_bar(
@@ -640,18 +664,98 @@ def update_overview_figures(selected_depts):
     )
 
     # 面积图
-    months = filtered_data['months']
-    cost_val = filtered_data['monthly_grouped_cost_val']
-    rev_val = filtered_data['monthly_grouped_rev_val']
-    pro_val = filtered_data['monthly_grouped_pro_val']
-    rat_val = filtered_data['monthly_grouped_pro_rat_val']
+    combined_operation_chart = create_combined_chart(
+        months = months,
+        cost_val= filtered_data['monthly_grouped_cost_val'],
+        rev_val=filtered_data['monthly_grouped_rev_val'],
+        pro_val= filtered_data['monthly_grouped_pro_val'],
+        rat_val= filtered_data['monthly_grouped_pro_rat_val'])
 
-    combined_operation_chart = create_combined_chart(months, cost_val, rev_val, pro_val, rat_val)
+    combined_operation_chart['layout']['title']['text']=f'营收趋势（截至{months[-1]}）' # 更新标题
+    # 卡片
+    # cards = filtered_data['card_data']
 
-    # cards 数据
 
-    return monthly_income_fig, monthly_profit_fig, yearly_income_fig, yearly_profit_fig, combined_operation_chart
+
+    return monthly_income_fig, monthly_profit_fig, yearly_income_fig, yearly_profit_fig,combined_operation_chart
+
+
+# 4. 处理饼图（依赖下拉菜单 + 右侧点击事件）
+@app.callback(
+    Output('dept-pie', 'figure'),
+    [Input('dept-dropdown', 'value'),
+     Input('combined-chart', 'clickData')]
+)
+def update_pie_chart(selected_depts,click_data):
+    filtered_data_pie = process_filter_data(selected_depts)
+    months = filtered_data_pie['months']
+    grouped_month_dept_rev = filtered_data_pie['grouped_month_dept_rev'] # 月份 + 部门的 分组对齐数据
+
+    if click_data and len(click_data['points']) > 0:  # 确定要显示的月份
+        month = click_data['points'][0]['x']
+        if month not in months:
+            month = months[-1]
+    else:
+        month = months[-1]
+
+    # 根据选择的月份和部门筛选数据
+    month_data = grouped_month_dept_rev[(grouped_month_dept_rev['month'] == month)]
+
+    # 准备饼图数据
+    values = []
+    depts = []
+    for dept in selected_depts:
+        value = month_data.loc[:, '总收入'][month_data['所属事业部'] == dept].sum()/10000
+        values.append(value)
+        dept = dept[0:-3] # 字少点
+        depts.append(dept)
+
+    pie_revenue_fig = go.Pie(
+        labels=depts,
+        values=values,
+        hole=0.01,  # hole: 饼图的中心孔径大小
+        marker_colors= list(styles['color'].values()), # for key, color in styles['color'].items():
+        textinfo='percent+label',
+        hoverinfo='label+value+percent',
+        textfont=dict(size=12),
+        insidetextorientation='radial',  # 饼图内部文本的方向 径向排列
+    ),
+
+    layout = go.Layout(
+        title={
+            'text':f'部门收入占比（截至{months[-1]})',
+            'font': {
+                'family': styles['sub_title']['family'],
+                'size': styles['sub_title']['fontSize'],
+                'color': styles['sub_title']['color']
+            },
+            'x': 0,  # 对应textAlign: 'left'
+            'xanchor': 'left',  # 对应textAlign: 'left'
+            'y': 0.95,
+            'yanchor': 'top',
+        },  # 添加标题样式
+
+        showlegend=True,
+        legend=dict(
+            orientation='h',  # 水平排列图例 v
+            yanchor='bottom',  # 图例在 Y 轴上的锚点位
+            y=0.9,  # 图例在 Y 轴上的位置，1.08 表示略高于图表顶部。
+            xanchor='center',
+            x=1,
+            font=dict(size=12)
+        ),
+        **styles['chart_bg']
+    )
+
+    return {
+        'data': pie_revenue_fig,
+        'layout': layout
+    }
+
+
+
+
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=8053)
+    app.run(debug=True, port=8052)
