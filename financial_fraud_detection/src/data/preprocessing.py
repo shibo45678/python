@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from typing import Tuple,Union
+from typing import Tuple, Union
 
 
 def clean_data(data: pd.DataFrame,
@@ -30,10 +30,11 @@ def clean_data(data: pd.DataFrame,
 先划分训练集、测试集，再在训练集里完成数据标准化的fit，后续整体数据的标准化transform，防止数据泄漏'''
 
 
-def split_data(X: pd.DataFrame,
-               y: Union[pd.Series,pd.DataFrame],
-               test_size: float = 0.3,
-               random_state: int = 42) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def split_data(
+        X: pd.DataFrame,
+        y: Union[pd.Series, pd.DataFrame],
+        test_size: float = 0.3,
+        random_state: int = 42) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return train_test_split(X, y, test_size=test_size, random_state=random_state)
 
 
@@ -62,7 +63,7 @@ def standardize_data(X_train: pd.DataFrame, X_test: pd.DataFrame,
 
 
 def undersample(X_train: pd.DataFrame,
-                y_train: Union[pd.Series,pd.DataFrame],
+                y_train: Union[pd.Series, pd.DataFrame],
                 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     # 获取异常值的数量、索引号
     rng = np.random.RandomState(42)  # 可单独为choice设置随机数
