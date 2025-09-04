@@ -3,11 +3,11 @@ import numpy as np
 from sklearn.model_selection import KFold
 from ..models.logistic_regression import LogisticRegressionModel
 from ..evaluation.metrics import evaluate_model_performance
-
+from typing import Union
 
 # 手动循环 正则强度 + KFold
 def printing_kfold_scores(x_train_data: pd.DataFrame,
-                          y_train_data: pd.DataFrame,
+                          y_train_data: Union[pd.Series,pd.DataFrame],
                           n_splits=5) -> float:
     fold = KFold(n_splits=n_splits, shuffle=False)  # 创建 KFold对象（K折交叉验证 K equal parts）
 
@@ -26,16 +26,14 @@ def printing_kfold_scores(x_train_data: pd.DataFrame,
         print('')
 
         # 内层 每个fold的召回率
+        lr = LogisticRegressionModel(C=c_param)  # C 外层遍历的正则化强度 其他参数配置相同。L1 正则化、优化算法 liblinear 适合小数据集且L1的情况、random_state(liblinear变）
         recall_accs = []
         for iteration, indices in enumerate(fold.split(x_train_data), start=1):
             # iteration ：i值，第i次交叉验证 ；
             # kfold.split(x_train_data)是个generator,返回2个索引切片 indices (array positions)，train_index 和 test_index
-            # 训练集的索引 indices[0] ，测试集的索引 indices[1] ，利用索引操作比数据本身要好
-
-            # C 外层遍历的正则化强度 、L1 正则化、优化算法 liblinear 适合小数据集且L1的情况、random_state(liblinear变）
+            # 交叉验证训练集的索引 indices[0] ，交叉验证测试集的索引 indices[1] ，利用索引操作比数据本身要好
             # estimator先fit(x，y)学习，y to be a 1D array. 即使1列的df,.values后是2D(n_sample,1),ravel()压成1D；
             # x 不能.values ,转换成array后会丢失features name，但模型需要features name
-            lr = LogisticRegressionModel(C=c_param)
 
             # 训练模型：训练集索引indices[0]，获取训练集数据-自变量、因变量
             lr.fit(x_train_data.iloc[indices[0]], y_train_data.iloc[indices[0]].values.ravel())

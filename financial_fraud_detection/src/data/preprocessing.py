@@ -2,14 +2,14 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from typing import Tuple
+from typing import Tuple,Union
 
 
 def clean_data(data: pd.DataFrame,
                target_column: str = '交易金额') -> pd.DataFrame:
     ''''''
     '''空值'''
-    data[target_column].isna().sum()
+    print(data[target_column].isna().sum())
 
     '''异常值'''
     q1, q3 = np.quantile(data[target_column], [0.25, 0.75])
@@ -31,7 +31,7 @@ def clean_data(data: pd.DataFrame,
 
 
 def split_data(X: pd.DataFrame,
-               y: pd.DataFrame,
+               y: Union[pd.Series,pd.DataFrame],
                test_size: float = 0.3,
                random_state: int = 42) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return train_test_split(X, y, test_size=test_size, random_state=random_state)
@@ -47,25 +47,25 @@ def standardize_data(X_train: pd.DataFrame, X_test: pd.DataFrame,
     amount_scaler.fit(X_train[target_column].values.reshape(-1, 1))
 
     # 避免警告
-    X_train_standardized = X_train.copy()
-    X_test_standardized = X_test.copy()
+    X_train_standardize = X_train.copy()
+    X_test_standardize = X_test.copy()
 
     # 第二步，分别transform
-    X_train_standardized['标准化交易金额'] = amount_scaler.transform(X_train[target_column].values.reshape(-1, 1))
-    X_test_standardized['标准化交易金额'] = amount_scaler.transform(X_test[target_column].values.reshape(-1, 1))
+    X_train_standardize['标准化交易金额'] = amount_scaler.transform(X_train[target_column].values.reshape(-1, 1))
+    X_test_standardize['标准化交易金额'] = amount_scaler.transform(X_test[target_column].values.reshape(-1, 1))
 
     # 将无价值列删除
-    X_train = X_train_standardized.drop([target_column, useless_column], axis=1)
-    X_test = X_test_standardized.drop([target_column, useless_column], axis=1)
+    X_train = X_train_standardize.drop([target_column, useless_column], axis=1)
+    X_test = X_test_standardize.drop([target_column, useless_column], axis=1)
 
     return X_train, X_test
 
 
 def undersample(X_train: pd.DataFrame,
-                y_train: pd.DataFrame,
+                y_train: Union[pd.Series,pd.DataFrame],
                 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     # 获取异常值的数量、索引号
-    rng = np.random.RandomState(42)  # 使用 RandomState 对象 为choice设置随机数
+    rng = np.random.RandomState(42)  # 可单独为choice设置随机数
     number_records_fraud = len(y_train[y_train == 1])
     fraud_indices = np.array(y_train[y_train == 1].index)
 
