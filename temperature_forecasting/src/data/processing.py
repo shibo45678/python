@@ -1,9 +1,8 @@
 import pandas as pd
 import numpy as np
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union
 from scipy import stats
 from sklearn.model_selection import train_test_split
-
 
 
 class DataPreprocessor:
@@ -157,7 +156,8 @@ class DataPreprocessor:
             result_df = (all_outliers.groupby(self.numeric_columns)
                          .agg(extreme_tag=('outlier_source', list),
                               abnormal_count=('outlier_source', 'count'),
-                              original_index=('original_index',first))
+                              original_index=('original_index', 'first'))
+                         )
             result_df.to_csv("extreme_features_zscore.csv")
         else:
             all_outliers = pd.DataFrame()
@@ -165,106 +165,111 @@ class DataPreprocessor:
         self.history.append("检测数值列异常值(zscore)")
         return self
 
-    def create_extreme_features_iqr(self, threshold: float = 1.5):
-        """使用IQR方法标记每列异常值"""
-        df = self.df.copy()
-        print(f"检测数值列异常值(iqr)...")
 
-        all_outliers_list = []
-        for col in self.numeric_columns:
+def create_extreme_features_iqr(self, threshold: float = 1.5):
+    """使用IQR方法标记每列异常值"""
+    df = self.df.copy()
+    print(f"检测数值列异常值(iqr)...")
 
-            if len(df[col].unique()) >= 4:
-                Q1, Q3 = self.df[col].quantile([0.25, 0.75])
-                IQR = Q3 - Q1
-                lower_bound = Q1 - threshold * IQR
-                upper_bound = Q3 + threshold * IQR
-                outlier_mask = (df[col] < lower_bound) | (df[col] > upper_bound)
-                outlier_indices = df[col].index[outlier_mask]
+    all_outliers_list = []
+    for col in self.numeric_columns:
 
-                if outlier_mask.sum() > 0:
-                    outlier_df = (df.loc[outlier_indices].copy()
-                                  .assign(outlier_source=col,
-                                          original_index=outlier_indices))  # 原始索引取出便于后续修改
+        if len(df[col].unique()) >= 4:
+            Q1, Q3 = self.df[col].quantile([0.25, 0.75])
+            IQR = Q3 - Q1
+            lower_bound = Q1 - threshold * IQR
+            upper_bound = Q3 + threshold * IQR
+            outlier_mask = (df[col] < lower_bound) | (df[col] > upper_bound)
+            outlier_indices = df[col].index[outlier_mask]
 
-                    all_outliers_list.append(outlier_df)
-                    print(f"列'{col}':检测到{len(outlier_df)}个异常值")
-                else:
-                    print(f"列'{col}':未检测到异常值")
+            if outlier_mask.sum() > 0:
+                outlier_df = (df.loc[outlier_indices].copy()
+                              .assign(outlier_source=col,
+                                      original_index=outlier_indices))  # 原始索引取出便于后续修改
 
+                all_outliers_list.append(outlier_df)
+                print(f"列'{col}':检测到{len(outlier_df)}个异常值")
             else:
-                print(f"列'{col}':唯一值样本数不足4个，IQR判断不适用，需要改用其他方法判断")
+                print(f"列'{col}':未检测到异常值")
 
-        # 一次合并所有结果
-        if all_outliers_list:
-            all_outliers = pd.concat(all_outliers_list, ignore_index=True)
-
-            # 一列多个异常结果合并
-            result_df = (all_outliers.groupby(self.numeric_columns)
-                         .agg(extreme_tag=('outlier_source', list),
-                              abnormal_count=('outlier_source', 'count'),
-                              original_index=('original_index',first)))
-            result_df.to_csv("extreme_features_iqr.csv")
         else:
-            all_outliers = pd.DataFrame()
+            print(f"列'{col}':唯一值样本数不足4个，IQR判断不适用，需要改用其他方法判断")
 
-        self.history.append("检测数值列异常值(iqr)")
-        return self
+    # 一次合并所有结果
+    if all_outliers_list:
+        all_outliers = pd.concat(all_outliers_list, ignore_index=True)
 
-    def create_extreme_features_multivariate(self, contamination=0.025):  # 预期异常比例 ≈2.5%
-        """多变量联合异常检测
-           多变量联合分析，不是逐列处理
-           某个点可能单个特征正常，但多个特征的组合异常
-        """
-        df = self.df.copy()
-        print(f"检测联合异常值(iso_forest)...")
+        # 一列多个异常结果合并
+        result_df = (all_outliers.groupby(self.numeric_columns)
+                     .agg(extreme_tag=('outlier_source', list),
+                          abnormal_count=('outlier_source', 'count'),
+                          original_index=('original_index', 'first')))
+        result_df.to_csv("extreme_features_iqr.csv")
+    else:
+        all_outliers = pd.DataFrame()
 
-        from sklearn.ensemble import IsolationForest
-        # 1.使用隔离森林检测整体异常
-        iso_forest = IsolationForest(
-            contamination=contamination,
-            random_state=42
-        )
-        outliers = iso_forest.fit_predict(df[self.numeric_columns])
-
-        # 2.标记异常点
-        df['is_outlier'] = outliers == -1
-        print(f"检测到{df['is_outlier'].sum()}个多变量异常点")
-        outliers_indices = df.index[outliers == -1]
-        result_df = df.loc[outliers_indices]
-        result_df.to_csv("extreme_features_isoforest.csv")
-
-        self.history.append("检测数值列异常值(iso_forest)")
-        return self
+    self.history.append("检测数值列异常值(iqr)")
+    return self
 
 
-    def get_history(self):
-        return self.history  # 查看清理历史
+def create_extreme_features_multivariate(self, contamination=0.025):  # 预期异常比例 ≈2.5%
+    """多变量联合异常检测
+       多变量联合分析，不是逐列处理
+       某个点可能单个特征正常，但多个特征的组合异常
+    """
+    df = self.df.copy()
+    print(f"检测联合异常值(iso_forest)...")
 
-    def get_summary(self):
-        """获取处理摘要"""
-        original_shape = self.original_df.shape
-        processed_shape = self.df.shape
+    from sklearn.ensemble import IsolationForest
+    # 1.使用隔离森林检测整体异常
+    iso_forest = IsolationForest(
+        contamination=contamination,
+        random_state=42
+    )
+    outliers = iso_forest.fit_predict(df[self.numeric_columns])
 
-        print(f"原始数据形状：{original_shape}")
-        print(f"处理后数据形状：{processed_shape}")
-        print(f"移除了 {original_shape[0] - processed_shape[0]} 行")
-        return self
+    # 2.标记异常点
+    df['is_outlier'] = outliers == -1
+    print(f"检测到{df['is_outlier'].sum()}个多变量异常点")
+    outliers_indices = df.index[outliers == -1]
+    result_df = df.loc[outliers_indices]
+    result_df.to_csv("extreme_features_isoforest.csv")
 
-    def get_processed_data(self):
-        return self.df.copy()
+    self.history.append("检测数值列异常值(iso_forest)")
+    return self
 
-    # 通过方法暴露数据
-    def get_numeric_columns(self):
-        """获取数值型列名"""
-        if self.numeric_columns is None:
-            self.identify_column_types()
-        return self.numeric_columns.copy()  # 返回副本避免外部修改
 
-    def get_categorical_columns(self):
+def get_history(self):
+    return self.history  # 查看清理历史
 
-        if self.categorical_columns is None:
-            self.identify_column_types()
-        return self.categorical_columns.copy()
+
+def get_summary(self):
+    """获取处理摘要"""
+    original_shape = self.original_df.shape
+    processed_shape = self.df.shape
+
+    print(f"原始数据形状：{original_shape}")
+    print(f"处理后数据形状：{processed_shape}")
+    print(f"移除了 {original_shape[0] - processed_shape[0]} 行")
+    return self
+
+
+def get_processed_data(self):
+    return self.df.copy()
+
+
+# 通过方法暴露数据
+def get_numeric_columns(self):
+    """获取数值型列名"""
+    if self.numeric_columns is None:
+        self.identify_column_types()
+    return self.numeric_columns.copy()  # 返回副本避免外部修改
+
+
+def get_categorical_columns(self):
+    if self.categorical_columns is None:
+        self.identify_column_types()
+    return self.categorical_columns.copy()
 
 
 class DataResampler:
