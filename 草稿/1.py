@@ -1,9 +1,17 @@
 import pandas as pd
 
-# dict = {'大类名称': ['b', 'b', 'a', 'a'],
-#         'sales': [1.5, 1.3, 3.8, 6.2],
-#         'fixed': [0.3, 0.5, 0.2, 0.6]}
-# df = pd.DataFrame(dict)
+dict1 = {'wd': ['b', 'b', 'b', 'b'],
+        'wv': [1.5, 1.3, 3.8, 6.2],
+        'max_wd': [0.3, 0.5, 0.2, 0.6]}
+
+dict2 = {'wd': ['a', 'a', 'a', 'a'],
+        'wv': [1.5, 1.3, 3.8, 6.2],
+        'max_wd': [0.3, 0.5, 0.2, 0.6]}
+df1 = pd.DataFrame(dict1)
+df2 = pd.DataFrame(dict2)
+dict = {'col1':df1 ,'col2':df2}
+dict_to_frame=pd.DataFrame(dict)
+
 # def calculate(group):
 #     sales = group['sales'].values
 #     fixed = group['fixed'].values
