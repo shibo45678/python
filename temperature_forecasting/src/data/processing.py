@@ -43,9 +43,16 @@ class DataPreprocessor:
     def encode_categorical_data(self):
         """处理分类型/字符串数据"""
         print("处理分类型/字符串数据...")
-        if self.categorical_columns:
-            categorical_df = self.df[self.categorical_columns]
-        # 独热编码等
+
+        for col in self.categorical_columns:
+            if col == 'Date Time':
+            # 处理字符串时间 并排好序
+              datetime= pd.to_datetime(self.df.pop(col), format='%d.%m.%Y %H:%M:%S')
+              self.df[col] = datetime
+              self.df = self.df.sort_values(col,ascending=True).reset_index()
+              print(f"处理时间字符串列{col},转成datetime格式")
+
+            # 处理分类 独热编码等
         self.history.append('处理分类型/字符串数据')
         return self
 
@@ -126,6 +133,7 @@ class DataPreprocessor:
         return self
 
     def create_extreme_features_zscore(self, threshold: int = 3):  # z = (x - μ) / σ 单位标准差 >=3个标准差算异常
+        self.identify_column_types()
         """使用Z-score方法标记每列异常值"""
         df = self.df.copy()
         print(f"检测数值列异常值(zscore)...")
@@ -165,111 +173,106 @@ class DataPreprocessor:
         self.history.append("检测数值列异常值(zscore)")
         return self
 
+    def create_extreme_features_iqr(self, threshold: float = 1.5):
+        self.identify_column_types()
+        """使用IQR方法标记每列异常值"""
+        df = self.df.copy()
+        print(f"检测数值列异常值(iqr)...")
 
-def create_extreme_features_iqr(self, threshold: float = 1.5):
-    """使用IQR方法标记每列异常值"""
-    df = self.df.copy()
-    print(f"检测数值列异常值(iqr)...")
+        all_outliers_list = []
+        for col in self.numeric_columns:
 
-    all_outliers_list = []
-    for col in self.numeric_columns:
+            if len(df[col].unique()) >= 4:
+                Q1, Q3 = self.df[col].quantile([0.25, 0.75])
+                IQR = Q3 - Q1
+                lower_bound = Q1 - threshold * IQR
+                upper_bound = Q3 + threshold * IQR
+                outlier_mask = (df[col] < lower_bound) | (df[col] > upper_bound)
+                outlier_indices = df[col].index[outlier_mask]
 
-        if len(df[col].unique()) >= 4:
-            Q1, Q3 = self.df[col].quantile([0.25, 0.75])
-            IQR = Q3 - Q1
-            lower_bound = Q1 - threshold * IQR
-            upper_bound = Q3 + threshold * IQR
-            outlier_mask = (df[col] < lower_bound) | (df[col] > upper_bound)
-            outlier_indices = df[col].index[outlier_mask]
+                if outlier_mask.sum() > 0:
+                    outlier_df = (df.loc[outlier_indices].copy()
+                                  .assign(outlier_source=col,
+                                          original_index=outlier_indices))  # 原始索引取出便于后续修改
 
-            if outlier_mask.sum() > 0:
-                outlier_df = (df.loc[outlier_indices].copy()
-                              .assign(outlier_source=col,
-                                      original_index=outlier_indices))  # 原始索引取出便于后续修改
+                    all_outliers_list.append(outlier_df)
+                    print(f"列'{col}':检测到{len(outlier_df)}个异常值")
+                else:
+                    print(f"列'{col}':未检测到异常值")
 
-                all_outliers_list.append(outlier_df)
-                print(f"列'{col}':检测到{len(outlier_df)}个异常值")
             else:
-                print(f"列'{col}':未检测到异常值")
+                print(f"列'{col}':唯一值样本数不足4个，IQR判断不适用，需要改用其他方法判断")
 
+        # 一次合并所有结果
+        if all_outliers_list:
+            all_outliers = pd.concat(all_outliers_list, ignore_index=True)
+
+            # 一列多个异常结果合并
+            result_df = (all_outliers.groupby(self.numeric_columns)
+                         .agg(extreme_tag=('outlier_source', list),
+                              abnormal_count=('outlier_source', 'count'),
+                              original_index=('original_index', 'first')))
+            result_df.to_csv("extreme_features_iqr.csv")
         else:
-            print(f"列'{col}':唯一值样本数不足4个，IQR判断不适用，需要改用其他方法判断")
+            all_outliers = pd.DataFrame()
 
-    # 一次合并所有结果
-    if all_outliers_list:
-        all_outliers = pd.concat(all_outliers_list, ignore_index=True)
+        self.history.append("检测数值列异常值(iqr)")
+        return self
 
-        # 一列多个异常结果合并
-        result_df = (all_outliers.groupby(self.numeric_columns)
-                     .agg(extreme_tag=('outlier_source', list),
-                          abnormal_count=('outlier_source', 'count'),
-                          original_index=('original_index', 'first')))
-        result_df.to_csv("extreme_features_iqr.csv")
-    else:
-        all_outliers = pd.DataFrame()
-
-    self.history.append("检测数值列异常值(iqr)")
-    return self
-
-
-def create_extreme_features_multivariate(self, contamination=0.025):  # 预期异常比例 ≈2.5%
-    """多变量联合异常检测
-       多变量联合分析，不是逐列处理
-       某个点可能单个特征正常，但多个特征的组合异常
-    """
-    df = self.df.copy()
-    print(f"检测联合异常值(iso_forest)...")
-
-    from sklearn.ensemble import IsolationForest
-    # 1.使用隔离森林检测整体异常
-    iso_forest = IsolationForest(
-        contamination=contamination,
-        random_state=42
-    )
-    outliers = iso_forest.fit_predict(df[self.numeric_columns])
-
-    # 2.标记异常点
-    df['is_outlier'] = outliers == -1
-    print(f"检测到{df['is_outlier'].sum()}个多变量异常点")
-    outliers_indices = df.index[outliers == -1]
-    result_df = df.loc[outliers_indices]
-    result_df.to_csv("extreme_features_isoforest.csv")
-
-    self.history.append("检测数值列异常值(iso_forest)")
-    return self
-
-
-def get_history(self):
-    return self.history  # 查看清理历史
-
-
-def get_summary(self):
-    """获取处理摘要"""
-    original_shape = self.original_df.shape
-    processed_shape = self.df.shape
-
-    print(f"原始数据形状：{original_shape}")
-    print(f"处理后数据形状：{processed_shape}")
-    print(f"移除了 {original_shape[0] - processed_shape[0]} 行")
-    return self
-
-
-def get_processed_data(self):
-    return self.df.copy()
-
-
-# 通过方法暴露数据
-def get_numeric_columns(self):
-    """获取数值型列名"""
-    if self.numeric_columns is None:
+    def create_extreme_features_multivariate(self, contamination=0.025):  # 预期异常比例 ≈2.5%
         self.identify_column_types()
-    return self.numeric_columns.copy()  # 返回副本避免外部修改
+        """多变量联合异常检测
+           多变量联合分析，不是逐列处理
+           某个点可能单个特征正常，但多个特征的组合异常
+        """
+        df = self.df.copy()
+        print(f"检测联合异常值(iso_forest)...")
 
+        from sklearn.ensemble import IsolationForest
+        # 1.使用隔离森林检测整体异常
+        iso_forest = IsolationForest(
+            contamination=contamination,
+            random_state=42
+        )
+        outliers = iso_forest.fit_predict(df[self.numeric_columns])
 
-def get_categorical_columns(self):
-    if self.categorical_columns is None:
-        self.identify_column_types()
-    return self.categorical_columns.copy()
+        # 2.标记异常点
+        df['is_outlier'] = outliers == -1
+        print(f"检测到{df['is_outlier'].sum()}个多变量异常点")
+        outliers_indices = df.index[outliers == -1]
+        result_df = df.loc[outliers_indices]
+        result_df.to_csv("extreme_features_isoforest.csv")
+
+        self.history.append("检测数值列异常值(iso_forest)")
+        return self
+
+    def get_history(self):
+        return self.history  # 查看清理历史
+
+    def get_summary(self):
+        """获取处理摘要"""
+        original_shape = self.original_df.shape
+        processed_shape = self.df.shape
+
+        print(f"原始数据形状：{original_shape}")
+        print(f"处理后数据形状：{processed_shape}")
+        print(f"移除了 {original_shape[0] - processed_shape[0]} 行")
+        return self
+
+    def get_processed_data(self):
+        return self.df.copy()
+
+    # 通过方法暴露数据
+    def get_numeric_columns(self):
+        """获取数值型列名"""
+        if self.numeric_columns is None:
+            self.identify_column_types()
+        return self.numeric_columns.copy()  # 返回副本避免外部修改
+
+    def get_categorical_columns(self):
+        if self.categorical_columns is None:
+            self.identify_column_types()
+        return self.categorical_columns.copy()
 
 
 class DataResampler:
@@ -283,6 +286,7 @@ class DataResampler:
                             start_index: int = 0,
                             step: int = 1) -> 'DataResampler':
         """系统抽样（等间隔抽样）"""
+        # 保证数据是排好序的
         self.resampled_data = self.original_data.iloc[start_index::step]
         print(f"等间隔抽样: 从索引 {start_index} 开始，步长 {step}，共 {len(self.resampled_data)} 个样本")
 
