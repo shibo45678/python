@@ -1,0 +1,21 @@
+[project]
+name = "pythonProject1"
+version = "0.1.0"
+dependencies = [
+    "numpy>=1.24.4",
+    "pandas>=1.4.4"
+]
+
+[tool.mypy]
+disallow_untyped_defs = true  # 强制函数类型注解
+warn_return_any = true        # 禁止返回 Any 类型
+ignore_missing_imports = true # 全局忽略无存根的库
+
+[tool.black]
+line_length = 120             # 可选：统一代码格式化配置
+
+[[tool.mypy.overrides]]  # 针对特定文件的规则
+module = "pandas.*"  # 对有存根的库（如 pandas）保持严格检查
+ignore_missing_imports = false
+module = "草稿.1" # 直接匹配文件，不带.py后缀
+disallow_untyped_defs = false
