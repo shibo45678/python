@@ -63,7 +63,10 @@ logs/
 *.gif
 *.pdf
 
+
 # Large data directories (建议不要版本控制大数据文件)
 data/
 results/
 trained_models/
+test.html
+test.js
