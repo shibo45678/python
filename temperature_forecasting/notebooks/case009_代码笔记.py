@@ -147,7 +147,7 @@ test_df = (test_df - train_mean) / train_std
 
 df_std = (df - train_mean) / train_std # 对所有集中数据进行标准化
 print(df_std)
-# 数据标准化（另外的"移动平均值"？？）
+# 数据标准化
 # 使用训练集的数据来计算均值和标准差，原因是：因为在训练模型时，不能访问训练集未来时间点的值，
 # 而且这种标准化的方法也应该使用移动平均值的方法来完成。但在这里非重点，且验证集和测试集能确保获得（某种程度上）真实的指标
 
@@ -173,31 +173,28 @@ class WindowGenerator():  # 创建窗口
     def __init__(self, input_width, label_width, shift,
                  train_df=train_df, val_df=val_df, test_df=test_df,
                  label_columns=None):
+        self.input_width = input_width
+        self.label_width = label_width
+        self.shift = shift
         self.train_df = train_df
         self.val_df = val_df
         self.test_df = test_df
-
         self.label_columns = label_columns
+        self.total_window_size = input_width + shift
 
         if label_columns is not None:
             self.label_columns_indices = {name: i for i, name in
                                           enumerate(label_columns)}
-
-        self.column_indices = {name: i for i, name in
-                               enumerate(train_df.columns)}
-
-        self.input_width = input_width
-        self.label_width = label_width
-        self.shift = shift
-
-        self.total_window_size = input_width + shift
+        self.columns_indices = {name: i for i, name in
+                                enumerate(train_df.columns)}
 
         self.input_indices = np.arange(self.total_window_size)[0:input_width]
-
         self.label_start = self.total_window_size - self.label_width
         self.label_indices = np.arange(self.total_window_size)[self.label_start:]
 
-    def __repr__(self):
+
+
+    def __repr__(self): # 返回对象的官方字符串表示（可用于重新创建对象）
         return '\n'.join([
             f'Total window size: {self.total_window_size}',
             f'Input indices: {self.input_indices}',
@@ -206,13 +203,13 @@ class WindowGenerator():  # 创建窗口
 
  # 划分数据窗口
  # 只需让刚刚创建好的single_window直接调用createTrainSet()方法或createValSet()方法或createTestSet（）方法即可
-def split_window(self, features):
+def split_window(self, features): # Receives these windowed sequences (not the original data frame)
     inputs = features[:, 0:self.input_width, :]
     labels = features[:, self.label_start:, :]
 
     if self.label_columns is not None:
         labels = tf.stack(
-            [labels[:, :, self.column_indices[name]] for name in self.label_columns],
+            [labels[:, :, self.columns_indices[name]] for name in self.label_columns],
             axis=-1)
 
     inputs.set_shape([None, self.input_width, None])
@@ -220,7 +217,7 @@ def split_window(self, features):
 
     return inputs, labels
 
-WindowGenerator.split_window = split_window
+WindowGenerator.split_window = split_window # 绑为属性？
 
 
 def make_dataset(self, data):
@@ -240,7 +237,6 @@ def make_dataset(self, data):
 
 
 WindowGenerator.make_dataset = make_dataset
-
 
 @property
 def createTrainSet(self):
@@ -272,9 +268,12 @@ WindowGenerator.createTestSet = createTestSet
 WindowGenerator.example = example
 
 
+
+
+
 def plot(self, model=None, plot_col='T', max_subplots=3):
     inputs, labels = self.example
-    plot_col_index = self.column_indices[plot_col]
+    plot_col_index = self.columns_indices[plot_col]
     max_n = min(max_subplots, len(inputs))
     for n in range(max_n):
         plt.subplot(3, 1, n + 1)
@@ -308,13 +307,10 @@ def plot(self, model=None, plot_col='T', max_subplots=3):
 
 WindowGenerator.plot = plot
 
-
-
-
 ##=============================================================3 构建窗口函数=============================================================
 
 #=======3.1 使用WindowGenerator类构建数据窗口
-single_window = WindowGenerator(input_width=6, label_width=5, shift=1,label_columns=['T'])
+single_window = WindowGenerator(input_width=6, label_width=5, shift=1, label_columns=['T'])
 # 历史数据6个数，倒着取5个 shift?
 print(single_window) # 总窗口大小7
 
@@ -338,26 +334,54 @@ for train_inputs, train_labels in multi_window.createTrainSet.take(1):
 
 ##=============================================================4 CNN模型预测=============================================================
 # =====4.1 构建模型
-# 基于历史六个时间点的天气情况（6行19列）预测经过24小时（shift=24)未来5个时间点的天气状况
 multi_conv_model = tf.keras.Sequential([
-    # 卷基层：输入数据是三维的tensor形式（conv1d是单通道，适合处理文本序列，conv2d适合处理图像）
-    # 【32，6，19】==>【32,4,64】
-    # filters 过滤器个数为64（通道）
-    # kernel_size 只需要指定一维，长度为3，剩下的与窗口宽度一致19，卷积核的大小3*19。
-    # strides 每次卷积核移动一步（6*19会卷出来4个数，一共64个）
-    # 卷积核只能从上往下走，不能从左往右走，即只能按照时间点的顺序
-    # param个数 3712（3*19*64=64）= 卷积核长*宽*通道数+每个通道一个偏置（偏置：控制每个神经元被激活的容易程度）
-    tf.keras.layers.Conv1D(filters=64, kernel_size=3, strides=1, activation='relu'),
-    # flatten层：将输入拉平，即把多维的输入一维化，用在从卷基层到全联接层的过渡
-    # 【32，4，64】==> 【32,256】 一次4个，一共64个通道
-    tf.keras.layers.Flatten(),
-    # 【32，256】==>【32，95】  5*19
-    # 权重初始化的方法：全零初始化
-    tf.keras.layers.Dense(5 * 19, kernel_initializer=tf.initializers.zeros),
-    # reshape层，将输入shape转换为特定shape
-    # 【32,95】==>【32,5,19】
-    # param数 24415 =4*64*95+95 = 256*95+95  全联接+偏置
-    tf.keras.layers.Reshape([5, 19])
+
+              # 添加输入层
+              # 添加卷积层
+              tf.keras.layers.Conv1D(filters=64,kernel_size=3,strides=1,activation='relu'),
+                  """conv1d是单通道，适合处理文本序列，conv2d适合处理图像；
+                  【输入数据】2个三维的tensor形式 （batch_size, time_steps, input_features） --> tuple(inputs,labels)：
+                      inputs : [32,6,19] 每个批次32个样本，每个样本6行19个特征，
+                      labels : [32,5,19] 19个特征：WindowGenerator生成的窗口是 multi_window 未指定labels，所以预测所有数据；
+                  【输出数据】形状 (batch_size, new_time_steps, filters) Conv1D ,new_time_steps:卷出几个 (6-3)+1 = 4
+                  【输入->输出】[32,6,19] - > [32,4,64] / [None,4,64]
+                  【卷积核个数】filters 设置输出64个特征通道(数)，每个通道代表了卷积核从输入中提取的[某种]特定模式或特征；
+                  【卷积核大小】kernel_size 3*19，Conv1D 中,只指定一个值，表示卷积核在时间轴上的长度。"宽度"自动等于输入的特征维度；
+                      卷积核的实际形状是 : (3, 19, 64) 每个卷积核会在时间步上滑动，计算内积（加上偏置和激活函数）得到一个特征图，
+                      特征图形状（不考虑批量大小）：长度4(6-3+1 不考虑填充)，所以64个卷积核就会输出一个形状为(4, 64)的特征图。
+                  【卷积核移动】步长/跨度 -> strides ，在输入数据上滑动的移动步数，控制输出尺寸和计算效率
+                                         在 Conv3D 中：strides 表示卷积核在深度、高度和宽度维度上每次滑动的步数，
+                                         步长越大：输出尺寸越小 ｜ 计算量越少，计算效率越高 ｜ 保留信息越少｜成本越低
+                              方向 -> Conv1D 的卷积核只能沿着时间维度移动，特征维度上的"覆盖"是自动完成的，不需要滑动。
+                  【param个数】卷积层，是由卷积核构成，64个卷积核。输入数据帮每个卷积核定下来最终参数（系数+截距项）（3*19+1）*64
+                   """
+
+              # 添加flatten层
+              tf.keras.layers.Flatten(),
+                  """
+                  卷积层和全连接层的过渡,无参数计算
+                  保留第一个维度（批量大小）不变，然后将所有剩下的维度“拉平”成一个一维向量。
+                  将一个多维的特征图（feature map）转换成一个一维的特征向量，以便输入到后续的全连接层（Dense Layer）中进行分类或回归任务。
+                  上层输入[32,4,64] : 每个卷积核，在每个样本里，会贡献某个特征模式/通道的【序列长度】= 4 , 通常代表经过卷积和池化后缩减后的序列长度
+                                     共有64个特征通道/模式。
+                  本层输出[32,256] ：拉平，所有空间/时间位置上的所有通道的特征的总数 4*64=256
+                  """
+              # 添加全局池化层
+                 """ 池化（Pooling）：是跟在卷积后面的一个降采样操作。
+                 它在一个小窗口（如2x2）里取最大值（Max Pooling）或平均值（Average Pooling），进一步压缩数据，扩大感受野，
+                 但池化层本身没有可学习的参数。tf.keras.layers.GlobalAveragePooling1D() """
+              # 添加全连接层
+              tf.keras.layers.Dense(units=5*19 ,kernel_initializer= tf.initializers.zeros),
+                  """
+                  输入[32,256] - >输出[32,5*19]，这里的5*19是每个样本滑动窗口的预测labels的形状，方便后续reshape。如果只预测2个特征，这里要改。
+                  参数个数：（256+1）*95 组，没有指定激活函数 activation ，所以是线性激活。
+                  kernel_initializer：将该 Dense 层的权重矩阵（kernel）初始化为全零,偏置也被初始化为0；
+                     这相当于初始预测值为数据的均值（即基线预测），从而避免初始预测过于随机，有助于训练过程的稳定性。
+                     前提是数据已经被标准化（standardized）或归一化，使得数据的均值为0。
+                  """
+              # 添加输出层
+              tf.keras.layers.Reshape([5,19])
+
 ])
 
 

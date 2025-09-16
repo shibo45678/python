@@ -8,9 +8,10 @@ import datetime
 
 class SpecialCnnLstm(DataPreprocessor):
     def __init__(self, df: pd.DataFrame):
+
         super().__init__(df)
 
-    def prepare_for_cnn_lstm(self) -> pd.DataFrame:
+    def prepare_for_cnn_lstm(self) ->'SpecialCnnLstm' :
         """1.处理'Data Time' 时间列
            2.处理风向'wd'与风速'wv'列数据"""
 
@@ -36,11 +37,11 @@ class SpecialCnnLstm(DataPreprocessor):
         print(self.df[['Day sin', 'Day cos', 'Year sin', 'Year cos']])
 
         # d.将转换结果可视化
-        Visualization.plot(self,
-                           X=np.array(self.df['Day sin'])[:25],  # 24小时
-                           y=np.array(self.df['Day cos'])[:25],
-                           xlabel='时间[单位：时]（Time [h]）',
-                           title='一天中的时间信号（Time of day signal）')
+        viz = Visualization()
+        viz.plot_time_signals(X=np.array(self.df['Day sin'])[:25],  # 24小时
+                 y=np.array(self.df['Day cos'])[:25],
+                 xlabel='时间[单位：时]（Time [h]）',
+                 title='一天中的时间信号（Time of day signal）')
 
         """2.处理风向'wd'与风速'wv'列数据"""
 
@@ -53,7 +54,7 @@ class SpecialCnnLstm(DataPreprocessor):
         # b.2D直方图--通过可视化的方式解释风矢量类型的数据由于原表风速和风向数据的原因
 
         # 原表风速和风向数据
-        Visualization.plot_hist2d(X=self.df['wd'],
+        Visualization.plot_hist2d(x=self.df['wd'],
                                   y=self.df['wv'],
                                   xlabel='风向 [单位：度]',
                                   ylabel='风速 [单位：米/秒]')
@@ -69,12 +70,13 @@ class SpecialCnnLstm(DataPreprocessor):
         self.df['max Wx'] = max_wv * np.cos(wd_rad)  # 计算最大风力'max. mv'的x和y分量，保存到df的'max Wx'列和'max Wy'列中
         self.df['max Wy'] = max_wv * np.sin(wd_rad)
 
-        Visualization.plot_hist2d(X=self.df['Wx'],
+        # 不需要初始化任何东西，最适合静态方法，然后类名调用
+        Visualization.plot_hist2d(x=self.df['Wx'],
                                   y=self.df['Wy'],
                                   xlabel='风的X分量[单位：m/s]',
                                   ylabel='风的Y分量[单位：m/s]')
 
-        Visualization.plot_hist2d(X=self.df['max Wx'],
+        Visualization.plot_hist2d(x=self.df['max Wx'],
                                   y=self.df['max Wy'],
                                   xlabel='最大风的X分量[单位：m/s]',
                                   ylabel='最大风的Y分量[单位：m/s]')
@@ -82,4 +84,7 @@ class SpecialCnnLstm(DataPreprocessor):
         # 对比两图，分解后有利于我们观察风的状况：找到原点（0，0），
         # 假设向上为北，那么南方向的 风出现次数较多，此外我们还可以观察到东北-西南方向的风
 
+        return self
+
+    def get_special_processed_data(self):
         return self.df

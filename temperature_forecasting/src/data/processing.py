@@ -46,13 +46,16 @@ class DataPreprocessor:
 
         for col in self.categorical_columns:
             if col == 'Date Time':
-            # 处理字符串时间 并排好序
-              datetime= pd.to_datetime(self.df.pop(col), format='%d.%m.%Y %H:%M:%S')
-              self.df[col] = datetime
-              self.df = self.df.sort_values(col,ascending=True).reset_index()
-              print(f"处理时间字符串列{col},转成datetime格式")
+                # 处理字符串时间 并排好序
+                datetime = pd.to_datetime(self.df.pop(col), format='%d.%m.%Y %H:%M:%S')
+                self.df[col] = datetime
+                self.df = self.df.sort_values(col, ascending=True)
+                print(f"处理时间字符串列{col},转成datetime格式")
 
-            # 处理分类 独热编码等
+            # 处理分类
+            # 1.分类数量少，星期几月(独热编码)
+            # 2.分类数量多，产品ID、店铺ID，模型内嵌入层 (Embedding Layer)，将高基数分类特征转换为密集向量表示
+            # 即使输入已经处理，如果是预测分类变量，也要处理输出层激活函数以及损失函数。而且layers也是需要分开卷积再合并！
         self.history.append('处理分类型/字符串数据')
         return self
 
@@ -117,6 +120,10 @@ class DataPreprocessor:
     def remove_duplicates(self):
         """移除重复行"""
         print("移除重复行...")
+        df = self.df.copy()
+        # 所有重复的行都为True，只有唯一的行为False,默认'first'是False被保留
+        duplicate_mask = df.duplicated(keep=False)
+        duplicate_rows = df[duplicate_mask]
 
         initial_count = len(self.df)
         self.df.drop_duplicates(inplace=True)
@@ -331,23 +338,50 @@ class DataResampler:
 class DataSplitter:
     def __init__(self, preprocessor: DataPreprocessor):
         self.preprocessor = preprocessor  # 使用其他类方法 self.preprocessor.get_numeric_columns()
-        self.X_train = None
-        self.X_test = None
-        self.y_train = None
-        self.y_test = None
+        self.X_train = pd.DataFrame()
+        self.X_val = pd.DataFrame()
+        self.X_test = pd.DataFrame()
+        self.y_train = pd.Series(dtype='object')
+        self.y_val = pd.Series(dtype='object')
+        self.y_test = pd.Series(dtype='object')
         self.scalers = {}  # 初始化标准化器字典
 
-    def split_data(self,
-                   X: pd.DataFrame,
-                   y: Union[pd.Series, pd.DataFrame, np.ndarray],
-                   test_size=0.3,
-                   random_state=42) -> 'DataSplitter':
+    def train_test_split(self,
+                         X: pd.DataFrame,
+                         y: Union[pd.Series, pd.DataFrame, np.ndarray],
+                         test_size=0.3,
+                         random_state=42) -> 'DataSplitter':
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(X, y, test_size=test_size,
                                                                                 random_state=random_state)
 
+        # 确保验证集为空
+        self.X_val = pd.DataFrame()
+        self.y_val = pd.Series(dtype='object')
         print(f"数据分割完成: 训练集 {len(self.X_train)} 样本, 测试集 {len(self.X_test)} 样本")
 
         return self
+
+    def train_val_test_split(self,
+                             X: pd.DataFrame,
+                             y: Union[pd.Series, pd.DataFrame, np.ndarray],
+                             train_size: float = 0.7,
+                             val_size: float = 0.2,
+                             test_size: float = 0.1) -> 'DataSplitter':
+
+        """时间分层，按顺序整体切3部分"""
+        n = len(y)
+        self.X_train, self.y_train = X[0:int(n * train_size)], y[0:int(n * train_size)]
+        self.X_val, self.y_val = X[int(n * train_size):int(n * (train_size + val_size))], y[int(n * train_size):int(
+            n * (train_size + val_size))]
+        self.X_test, self.y_test = X[int(n * (train_size + val_size)):], y[int(n * (train_size + val_size)):]
+
+        print(
+            f"数据分割完成: 训练集 {len(self.X_train)} 样本, 验证集 {len(self.X_val)} 样本,测试集 {len(self.X_test)} 样本")
+        return self
+
+    def has_validation_set(self) -> bool:
+        """检查是否有验证集"""
+        return not self.X_val.empty and len(self.X_val) > 0
 
     def standardize_data(self) -> 'DataSplitter':  # 即zscore（原值-均值）/ 标准差
         """Z_score标准化（使用训练集统计量）"""
@@ -365,15 +399,27 @@ class DataSplitter:
                 if std_val > 1e-8:  # 避免除零错误
                     self.X_train[col] = (self.X_train[col] - mean_val) / std_val
                     print(f"训练集列{col}:Z-score 标准化完成")
-                    self.X_test[col] = (self.X_test[col] - mean_val) / std_val
-                    print(f"测试集列{col}:Z-score 标准化完成")
+
+                    if self.has_validation_set() and col in self.X_val.columns:
+                        self.X_val[col] = (self.X_val[col] - mean_val) / std_val
+                        print(f"验证集列{col}:Z-score 标准化完成")  # 即使没有验证集，也会是None
+
+                    if not self.X_test.empty and col in self.X_test.columns:
+                        self.X_test[col] = (self.X_test[col] - mean_val) / std_val
+                        print(f"测试集列{col}:Z-score 标准化完成")
 
                     self.scalers[col] = {'type': 'zscore', 'mean': mean_val, 'std': std_val, 'method': 'standardize'}
+                    print(f"列 {col}: 标准化完成")
 
                 else:
+                    # 处理零标准差情况
                     print(f"列{col} 标准差为0 ，跳过标准化")
                     self.X_train[col] = 0  # 所有值相同，设为0
-                    self.X_test[col] = 0
+                    if self.has_validation_set() and col in self.X_val.columns:
+                        self.X_val[col] = 0
+                    if not self.X_test.empty and col in self.X_test.columns:
+                        self.X_test[col] = 0
+                    print(f"列 {col}: 标准差为0，设为常数0")
         return self
 
     def normalize_data(self) -> 'DataSplitter':  # 归一化 (Normalization)	(x - min) / (max - min)
@@ -393,19 +439,33 @@ class DataSplitter:
                 if max_val > min_val:
                     self.X_train[col] = (self.X_train[col] - min_val) / (max_val - min_val)
                     print(f"训练集列{col}:min_max 归一化完成")
-                    self.X_test[col] = (self.X_test[col] - min_val) / (max_val - min_val)
-                    print(f"测试集列{col}:min_max 归一化完成")
+
+                    if self.has_validation_set() and col in self.X_val.columns:
+                        self.X_val[col] = (self.X_val[col] - min_val) / (max_val - min_val)
+                        print(f"验证集列{col}:min_max 归一化完成")
+
+                    if not self.X_test.empty and col in self.X_test.columns:
+                        self.X_test[col] = (self.X_test[col] - min_val) / (max_val - min_val)
+                        print(f"测试集列{col}:min_max 归一化完成")
 
                     self.scalers[col] = {'type': 'minmax', 'min': min_val, 'max': max_val, 'method': 'normalize'}
+                    print(f"列 {col}: 归一化完成")
+
                 else:  # 所有值相同的情况
                     self.X_train[col] = 0
-                    self.X_test[col] = 0
+                    if self.has_validation_set() and col in self.X_val.columns:
+                        self.X_val[col] = 0
+                    if not self.X_test.empty and col in self.X_test.columns:
+                        self.X_test[col] = 0
                     print(f"列 '{col}': 最大值等于最小值，设为0")
 
         return self
 
     def get_transformed_data(self) -> Tuple:
-        return self.X_train.copy(), self.X_test.copy(), self.y_train.copy(), self.y_test.copy()
+        if not self.X_val.empty:
+            return self.X_train.copy(), self.X_val.copy(), self.X_test.copy(), self.y_train.copy(), self.y_val.copy(), self.y_test.copy()
+        else:
+            return self.X_train.copy(), self.X_test.copy(), self.y_train.copy(), self.y_test.copy()
 
     def get_scalers(self) -> dict:
         return self.scalers.copy()

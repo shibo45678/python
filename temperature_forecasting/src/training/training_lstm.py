@@ -1,0 +1,2 @@
+def TrainingLstm():
+    pass
