@@ -7,7 +7,7 @@ from data.decorator import validate_input
 from models.cnn import EnhancedCnnModel
 from models.lstm import EnhancedLstmModel
 from training.training_models import TrainingModel
-from data.windows import WindowGenerator
+from data.windows import WindowGenerator, EnhancedWindowGenerator
 from evaluation.model_evaluation import ModelEvaluation
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 import tensorflow as tf
@@ -31,7 +31,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             已保存模型路径，如果提供则直接使用保存的模型
         """
         self.model_config = model_config or {}
-        self.weights_dir = f"best_model_{self.model_config['model_type']}_weights"
         self.best_checkpoint = None
 
         self.training_model_ = None  # 训练过程中使用的模型（可能包含dropout等）
@@ -42,42 +41,54 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.train_window_data = None
         self.val_window_data = None
         self.test_window_data = None
-        self.window = self._create_window_generator()
+        self.input_cols_ = None  # 处理掉时间列，保证进入模型的所有列是数值
 
-    def fit(self, X:dict, y=None):
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.weights_dir = f"weights/{self.model_config['model_type']}_{timestamp}"
+
+    def fit(self, X: dict, y=None):
         # 写出数据源
         train_datasets = X['train_datasets']
         val_datasets = X['val_datasets']
 
+        # 0.处理时间列
+        datetime_cols = train_datasets.select_dtypes(include=['datetime64']).columns
+        self.input_cols_ = [col for col in list(train_datasets.columns) if col not in datetime_cols]
 
-        # 1.处理窗口数据
-        train_window_data = self.window.createDataset(train_datasets)
-        val_window_data = self.window.createDataset(val_datasets)
+        train_datasets_ = train_datasets[self.input_cols_]
+        val_datasets_ = val_datasets[self.input_cols_]
 
-        # 2. 构建模型 （神经网络预处理已经返回了模型期望的正确格式，不copy）
+        #  构建模型 （神经网络预处理已经返回了模型期望的正确格式，不copy）
         # 1.1 获得embedding_info
-        self.embedding_info = EmbeddingConfig._get_embedding_info(train_datasets,  # 原始DF
-                                                                  self.model_config['categorical_columns'],
-                                                                  self.model_config['input_shape'])
-        # 1.2 选择模型
+        self.embedding_info = EmbeddingConfig._get_embedding_info(train_datasets_,  # 原始DF
+                                                                  self.model_config['categorical_columns']
+                                                                  )
+
+        # 1.2 处理窗口数据
+        self.window = self._create_window_generator(self.embedding_info)
+        train_window_data = self.window.createMultimodalDataset(train_datasets_)
+        val_window_data = self.window.createMultimodalDataset(val_datasets_)
+
+        # 1.3 选择模型
         if self.model_config['model_type'].startswith('cnn'):
-            cnn_model_config = {**self.model_config['cnn_model_config'],  # 解包
+            cnn_model_config = {**self.model_config,  # 解包
                                 'embedding_configs': self.embedding_info}  # 追加
-            cnn_model = EnhancedCnnModel()
-            cnn_model._build_multi_modal_cnn_model(cnn_model_config),
-            self.training_model_ = cnn_model
+            cnn_model = EnhancedCnnModel(architecture_type='enhance_parallel', config=cnn_model_config)
+            cnn_model_ = cnn_model._build_multi_modal_cnn_model()
+            self.training_model_ = cnn_model_
 
         elif self.model_config['model_type'].startswith('lstm'):
-            lstm_model_config = {**self.model_config['lstm_model_config'],
+            lstm_model_config = {**self.model_config,
                                  'embedding_configs': self.embedding_info}
             lstm_model = EnhancedLstmModel()
-            lstm_model._build_multi_modal_lstm_model(lstm_model_config)
-            self.training_model_ = lstm_model
+            lstm_model_ = lstm_model._build_multi_modal_lstm_model(lstm_model_config)
+            self.training_model_ = lstm_model_
 
-        # 3. 训练模型
+        # 1.4 训练模型
         # 确保目录存在(立即创建)
         os.makedirs(self.weights_dir, exist_ok=True)
-        self.history_, best_checkpoint = TrainingModel(model_name=self.model_config['model_name'],
+        self.history_, best_checkpoint = TrainingModel(model_name=self.model_config['model_type'],
                                                        model=self.training_model_,
                                                        trainset=train_window_data,
                                                        valset=val_window_data,
@@ -90,7 +101,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         # 训练完成后，创建用于预测的模型
         self._prediction_model = self.reconstruct_model()
 
-        # 4. 评估模型
+        # 1.5 评估模型
         self.evaluate_model(dataset=val_window_data, dataset_type='val')
 
         self.is_fitted_ = True
@@ -102,9 +113,11 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         check_is_fitted(self)
 
         X_ = pd.DataFrame(X) if not isinstance(X, pd.DataFrame) else X.copy()
+        X_model = X_[self.input_cols_]
+        time_column_X_ = X_[self.model_config['time_column']]
 
         # 1. 处理窗口数据
-        predict_window_data = self.window.createDataset(X_)
+        predict_window_data = self.window.createDataset(X_model)
 
         # 2. 重构模型
         if self.prediction_model_ is None:
@@ -114,12 +127,12 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         predictions = self._prediction_model.predict(predict_window_data)
 
         # 4. 恢复未使用时间列
-        historical_timestamps = X_[self.model_config['time_column']].copy()
+        historical_timestamps = time_column_X_.copy()
 
         last_time = historical_timestamps.iloc[-1]
-        steps_ahead = self.model_config['label_width']  # 默认预测步长
+        steps_ahead = self.model_config['output_width']  # 默认预测步长
 
-        future_timestamps = self._generate_future_timestamps(last_time, self.model_config['label_width'], 'H')
+        future_timestamps = self._generate_future_timestamps(last_time, self.model_config['output_width'], 'H')
 
         predictions_ = pd.DataFrame({
             'timestamp': future_timestamps,
@@ -128,13 +141,16 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         return predictions_
 
-    def _create_window_generator(self):
+    def _create_window_generator(self, embedding_info):
 
-        window = WindowGenerator(
+        window = EnhancedWindowGenerator(
             input_width=self.model_config['input_width'],
-            label_width=self.model_config['label_width'],
+            label_width=self.model_config['output_width'],
             shift=self.model_config['shift'],
-            label_columns=list(self.model_config['output_config'].keys())
+            label_columns=list(self.model_config['output_config'].keys()),
+            numeric_columns=self.model_config['numeric_columns'],
+            categorical_columns=self.model_config['categorical_columns'],
+            embedding_configs=embedding_info
         )
 
         return window
@@ -179,7 +195,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         if hasattr(self, 'training_model_') and hasattr(self.training_model_, 'optimizer'):
             optimizer = self.training_model_.optimizer  # 可以用实例，load可以用配置
         else:
-            learning_rate = self.model_config.get('learning_rate', 0.001)  # 保证学习率一致
+            learning_rate = self.model_config.get('learning_rate', 0.001)
             optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
         # 单输出或者多输出都可以使用字典，但是要保证输出层名字正确
@@ -352,7 +368,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         if hasattr(self, 'weights_path') and os.path.exists(self.weights_path):
             self.prediction_model_ = self.reconstruct_model()
-            self.window = self._create_window_generator()
+            self.window = self._create_window_generator(self.embedding_info)
 
 
 class EmbeddingConfig:
@@ -384,7 +400,7 @@ class EmbeddingConfig:
         return n_categories >= 2 and unique_ratio < 0.5
 
     @staticmethod
-    def _get_embedding_info(dataset: pd.DataFrame, cat_cols: list, input_shape: tuple):
+    def _get_embedding_info(dataset: pd.DataFrame, cat_cols: list):
         embedding_configs = {}
 
         if cat_cols and isinstance(dataset, pd.DataFrame):
@@ -395,17 +411,16 @@ class EmbeddingConfig:
                 unique_ratio = n_categories / len(series)
 
                 base_config = {
-                    'input_dim': n_categories,  # 不加1，因为已经预留了一个__UNKNOWN__
-                    'input_length': input_shape[0],
+                    'input_dim': n_categories + 1,  # 已经预留了一个__UNKNOWN__ 不代表训练集就有n+1个种类，算的是(实际数据集中的种类数+1)
                     'name': f'embedding_{col}'
                 }
 
                 if EmbeddingConfig.should_use_embedding(n_categories, unique_ratio):
                     base_config['output_dim'] = EmbeddingConfig.get_embedding_dim(n_categories)
-                else:  # 轻量Embedding
+                else: # 轻量Embedding
                     base_config.update({
                         'output_dim': max(1, min(2, n_categories // 20)),
-                        'embeddings_regularizer': l2(0.1)  # 强正则化
+                        'embeddings_regularizer': l2(0.1)  # 强正则化(output_dim 从3->1)
                     })
                 embedding_configs[col] = base_config
 

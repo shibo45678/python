@@ -31,7 +31,7 @@ LOGGING_CONFIG = {
         },
         'pipelines.preprocess_pipeline': {  # 专门为pipelines.preprocess_pipeline模块配置
             'handlers': ['default'],
-            'level': 'DEBUG',  # 显示WARNING及以上（更详细）
+            'level': 'WARNING',  # 显示WARNING及以上（更详细）
             'propagate': False  # 不向上传递，避免重复
         },
         'data.feature_engineering.feature_generation_from_numeric': {
@@ -41,8 +41,8 @@ LOGGING_CONFIG = {
         },
         'data.feature_engineering.feature_generation_from_time': {
             'handlers': ['default'],
-            'level': 'DEBUG',  # 显示WARNING及以上（更详细）
-            'propagate': False
+            'level': 'DEBUG',
+            'propagate': True
         },
         'sklearn': {  # 第三方库sklearn的配置
             'handlers': ['default'],

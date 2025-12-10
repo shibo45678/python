@@ -59,4 +59,4 @@ disallow_untyped_defs = false # 进行宽松的类型检查，遗留代码
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = "-v --tb=short"
+addopts = "-s -v"

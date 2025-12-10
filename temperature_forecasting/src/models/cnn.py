@@ -1,7 +1,9 @@
 from pydantic import BaseModel, Field, field_validator, PositiveInt
 from typing import List, Optional, Dict, Tuple
 import os
+import logging
 
+logger = logging.getLogger(__name__)
 # 在模型文件的开头设置
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 最严格的设置
 import tensorflow as tf
@@ -11,7 +13,7 @@ import tensorflow as tf
 class CnnModel:
     """"""
     """
-    模型选择：1.适合时间序列回归预测(仅多个数值特征的回归)：short_sequence_model <20时间步、conv1D
+    模型选择：1. 父类适合时间序列回归预测(仅数值特征的回归)：short_sequence_model <20时间步、conv1D
                _build_sequential_model 方便扩展参数列表，支持更多类型的层，针对特定数据集定制最优架构；
                                        简单卷积+全连接。
                _build_parallel_model 纯CNN模型，多分支设计可能捕捉更丰富的特征，比如短、中、长期。
@@ -20,12 +22,15 @@ class CnnModel:
                                       """
 
     def __init__(self,
-                 architecture_type='parallel',  # 'sequential' / 'mixed'
-                 **kwargs):
+                 architecture_type,  # 'sequential' / 'mixed'
+                 config=None,**kwargs):
+
         if architecture_type == 'sequential':
-            self.model = self._build_sequential_model(**kwargs)
+            self.model = self._build_sequential_model(config)
+        elif architecture_type == 'parallel':
+            self.model = self._build_parallel_model(config)
         else:
-            self.model = self._build_parallel_model(**kwargs)
+            self.model =None # 不构建 留给子类
 
     """=====================参数验证====================="""
 
@@ -116,7 +121,7 @@ class CnnModel:
                       (filters=f, kernel_size=k, strides=1, padding=padding[0],
                        activation=activation[0],
                        name=f"conv_{i + 1}"))
-            print(
+            logger.debug(
                 f"添加卷积层conv_{i + 1}:Filter={f},Kernel={k},Stride={s},Padding={padding[0]},Activation={activation[0]}")
 
         # 添加flatten层
@@ -133,7 +138,7 @@ class CnnModel:
             model.add(tf.keras.layers.Dense(units=output_shape[0] * output_shape[1],
                                             activation=activation[1],
                                             kernel_initializer=tf.initializers.zeros))
-            print(f"添加全连接层dense_{i + 1}:Units={units}, activation ={activation}, 目前有全零初始化")
+            logger.debug(f"添加全连接层dense_{i + 1}:Units={units}, activation ={activation}, 目前有全零初始化")
 
         # 添加输出层
         model.add(tf.keras.layers.Reshape([output_shape[0], output_shape[1]]))
@@ -167,12 +172,12 @@ class CnnModel:
         #  多分支设计可能捕捉更丰富的特征，比如短、中、长期；
 
         inputs = tf.keras.Input(shape=input_shape)
-        print(f"input_shape:{input_shape}")
+        logger.debug(f"input_shape:{input_shape}")
         x = inputs
 
         # 多分支特征提取
         for layer_index, (f_ls, k_ls, d_ls) in enumerate(zip(branch_filters, branch_kernels, branch_dilation_rate)):
-            print(f"已添加第{layer_index}层")
+            logger.debug(f"已添加第{layer_index}层")
 
             branch_outputs = []
             for branch_index, (num_filters, num_kernels, num_dilation) in enumerate(zip(f_ls, k_ls, d_ls)):
@@ -180,14 +185,14 @@ class CnnModel:
                                                 dilation_rate=num_dilation)(x)
                 branch = tf.keras.layers.BatchNormalization()(branch)
                 branch = tf.keras.layers.Activation(activation)(branch)
-                print(
+                logger.debug(
                     f"第{branch_index}个分支:滤波器{num_filters}个，Kernel_size={num_kernels},Activation={activation},dilation_rate={num_dilation}")
                 branch_outputs.append(branch)
 
             # 层'内'的分支合并（融合同层不同分支的特征）将同层的多个分支沿着最后一个维度（即特征维度）拼接起来。
             # 2个(batch_size, time_steps, 32) ->(batch_size, time_steps, 64) 即:2个(batch_size,6,32)->(batch_size, 6, 64)
             merged = tf.keras.layers.concatenate(branch_outputs, axis=-1)  # 拼接
-            print(f"已完成第{layer_index}层的分支合并")
+            logger.debug(f"已完成第{layer_index}层的分支合并")
 
             # 使用1×1卷积进行特征融合和降维
             fused = tf.keras.layers.Conv1D(filters=sum(f_ls) // 2, kernel_size=1, padding='same', dilation_rate=1)(
@@ -241,18 +246,19 @@ class CnnModel:
         if self.model is not None:
             return self.model.summary()
         else:
-            print("模型尚未构建")
+            logger.debug("模型尚未构建")
 
 
 class EnhancedCnnModel(CnnModel):
     class MultiModalConfig(CnnModel.ParallelConfig):
-        input_width:int = Field(default=6,description="输入时间步步长")
-        label_width:int = Field(default=5,description="输出时间步步长")
+        input_width: int = Field(default=6, description="输入时间步步长")
+        output_width: int = Field(default=5, description="输出时间步步长")
         numeric_columns: List[str] = Field(default=[], description="数值列名称")
         categorical_columns: List[str] = Field(default=[], description="分类列名称")
-        embedding_info: Dict[str, Dict] = Field(default={},
+        embedding_configs: Dict[str, Dict] = Field(default={},
                                                 description="分类列信息 {input_dim,input_length,output_dim,embeddings_regularizer}}")
-        output_config: Dict[str, Dict] = Field(..., description="输出配置 {输出列: {type: regression/classification,binary_classification ...}}")
+        output_config: Dict[str, Dict] = Field(...,
+                                               description="输出配置 {输出列: {type: regression/classification,binary_classification ...}}")
         learning_rate: float = Field(default=0.001)
         '''
         参数说明：
@@ -284,36 +290,52 @@ class EnhancedCnnModel(CnnModel):
                     }
         '''
 
-
         @field_validator('output_config')
         def _validate_output_config(cls, v):
             for label_name, config in v.items():
                 if not isinstance(config, dict):
                     raise ValueError(f"输出配置 '{config}' 必须是字典")
-                requirements = {'type','loss','metrics'}
+                requirements = {'type', 'loss', 'metrics'}
                 if not requirements.issubset(config.keys()):
                     missing = requirements - set(config.keys())
                     raise ValueError(f"配置缺少必需的字段: {missing}")
-                if config['type'] not in ['regression', 'classification','binary_classification']:
+                if config['type'] not in ['regression', 'classification', 'binary_classification']:
                     raise ValueError(f"输出类型必须是 'regression' 或 'classification' 或 'binary_classification'")
 
             return v
 
-    def _build_multi_modal_cnn_model(self, config: dict = None) -> tf.keras.Model:
-        model_config = self._validate_config(config, self.MultiModalConfig)
+    def __init__(self,architecture_type = 'enhance_parallel',config=None,**kwargs):
+        """
+        参数:
+        ----------
+        architecture_type: str
+        模型架构类型: 'sequential', 'parallel', 'enhance_parallel'(增加分类特征的embedding）
+        """
+        kwargs['config'] = config # 重要：传递 config 给父类
+        kwargs['architecture_type'] = architecture_type
 
-        input_width = model_config.input_width
-        output_width = model_config.output_width
-        num_cols = model_config.numeric_columns
-        cat_cols = model_config.categorical_columns
-        embedding_configs = model_config.embedding_configs
-        output_config = model_config.output_config
+        super().__init__(**kwargs)
 
-        branch_filters = model_config.branch_filters
-        branch_kernels = model_config.branch_kernels
-        branch_dilation_rate = model_config.branch_dilation_rate
-        activation = model_config.activation
-        learning_rate = model_config.learning_rate
+        self.model_config = self._validate_config(config, self.MultiModalConfig)
+
+        self.model = self._build_multi_modal_cnn_model()
+
+
+    def _build_multi_modal_cnn_model(self) -> tf.keras.Model:
+
+
+        input_width = self.model_config.input_width
+        output_width = self.model_config.output_width
+        num_cols = self.model_config.numeric_columns
+        cat_cols = self.model_config.categorical_columns
+        embedding_configs = self.model_config.embedding_configs
+        output_config = self.model_config.output_config
+
+        branch_filters = self.model_config.branch_filters
+        branch_kernels = self.model_config.branch_kernels
+        branch_dilation_rate = self.model_config.branch_dilation_rate
+        activation = self.model_config.activation
+        learning_rate = self.model_config.learning_rate
 
         # 分类列Embedding层的判断
         numeric_input = tf.keras.layers.Input(
@@ -349,7 +371,7 @@ class EnhancedCnnModel(CnnModel):
 
         # 多分支特征提取
         for layer_index, (f_ls, k_ls, d_ls) in enumerate(zip(branch_filters, branch_kernels, branch_dilation_rate)):
-            print(f"已添加第{layer_index}层")
+            logger.debug(f"已添加第{layer_index}层")
 
             branch_outputs = []
             for branch_index, (num_filters, num_kernels, num_dilation) in enumerate(zip(f_ls, k_ls, d_ls)):
@@ -357,14 +379,14 @@ class EnhancedCnnModel(CnnModel):
                                                 dilation_rate=num_dilation)(x)
                 branch = tf.keras.layers.BatchNormalization()(branch)
                 branch = tf.keras.layers.Activation(activation)(branch)
-                print(
+                logger.debug(
                     f"第{branch_index}个分支:滤波器{num_filters}个，Kernel_size={num_kernels},Activation={activation},dilation_rate={num_dilation}")
                 branch_outputs.append(branch)
 
             # 层'内'的分支合并（融合同层不同分支的特征）将同层的多个分支沿着最后一个维度（即特征维度）拼接起来。
             # 2个(batch_size, time_steps, 32) ->(batch_size, time_steps, 64) 即:2个(batch_size,6,32)->(batch_size, 6, 64)
             merged = tf.keras.layers.concatenate(branch_outputs, axis=-1)  # 拼接
-            print(f"已完成第{layer_index}层的分支合并")
+            logger.debug(f"已完成第{layer_index}层的分支合并")
 
             # 使用1×1卷积进行特征融合和降维
             fused = tf.keras.layers.Conv1D(filters=sum(f_ls) // 2, kernel_size=1, padding='same', dilation_rate=1)(
@@ -412,8 +434,8 @@ class EnhancedCnnModel(CnnModel):
                     padding='same',
                     name=f'output_{output_name}'
                 )(x)
-                loss_dict[f'output_{output_name}'] = config.get('loss','mse')
-                metric_dict[f'output_{output_name}'] = config.get('metrics',['mae'])
+                loss_dict[f'output_{output_name}'] = config.get('loss', 'mse')
+                metric_dict[f'output_{output_name}'] = config.get('metrics', ['mae','mape'])
 
             elif config['type'] == 'classification':
                 # 分类任务：输出 (batch_size, output_timesteps, num_classes)
@@ -424,8 +446,8 @@ class EnhancedCnnModel(CnnModel):
                     padding='same',
                     name=f'output_{output_name}'
                 )(x)
-                loss_dict[f'output_{output_name}'] = config.get('loss','sparse_categorical_crossentropy')
-                metric_dict[f'output_{output_name}'] =config.get('metrics',['accuracy'])
+                loss_dict[f'output_{output_name}'] = config.get('loss', 'sparse_categorical_crossentropy')
+                metric_dict[f'output_{output_name}'] = config.get('metrics', ['accuracy'])
 
             elif config['type'] == 'binary_classification':
                 output_layer = tf.keras.layers.Conv1D(
@@ -435,8 +457,8 @@ class EnhancedCnnModel(CnnModel):
                     padding='same',
                     name=f'output_{output_name}'
                 )(x)
-                loss_dict[f'output_{output_name}'] = config.get('loss','binary_crossentropy')
-                metric_dict[f'output_{output_name}'] = config.get('metrics',['accuracy'])
+                loss_dict[f'output_{output_name}'] = config.get('loss', 'binary_crossentropy')
+                metric_dict[f'output_{output_name}'] = config.get('metrics', ['accuracy'])
 
             else:
                 # 默认情况：使用回归配置
@@ -448,7 +470,7 @@ class EnhancedCnnModel(CnnModel):
                     name=f'output_{output_name}'
                 )(x)
                 loss_dict[f'output_{output_name}'] = config.get('loss', 'mse')
-                metric_dict[f'output_{output_name}'] = config.get('metrics', ['mae'])
+                metric_dict[f'output_{output_name}'] = config.get('metrics', ['mae','mape'])
 
             outputs.append(output_layer)
 
@@ -461,5 +483,3 @@ class EnhancedCnnModel(CnnModel):
                       metrics=metric_dict)
 
         return model
-
-

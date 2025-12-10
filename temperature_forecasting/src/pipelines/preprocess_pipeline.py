@@ -184,7 +184,7 @@ class CompletePreprocessor:
 
             else:
                 # 创建pipeline 并缓存
-                # cachedir = f'./pipeline_cache/pipeline_{idx + 1}'
+                # cachedir = f'./pipeline_cache/pipeline_{idx}'
                 # if not os.path.exists(cachedir):
                 #     os.makedirs(cachedir)
                 #
@@ -192,7 +192,7 @@ class CompletePreprocessor:
 
                 steps = [(f'engineer_{i}', engineer) for i, engineer in enumerate(class_obj_list)]
 
-                pipeline = Pipeline(steps,) # memory=memory
+                pipeline = Pipeline(steps) # ,memory=memory
 
                 old = features_temp.shape
                 features_temp = pipeline.fit_transform(features_temp, labels_temp)

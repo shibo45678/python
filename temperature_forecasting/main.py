@@ -10,7 +10,6 @@
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-import pandas as pd
 from sklearn.utils.validation import check_is_fitted
 
 from utils.tensorflow_config import TensorFlowConfig
@@ -53,19 +52,20 @@ def main():
         'path': '~/Python/NeuralNetwork/temperature_forecasting/data/intermediate',
         'filename': 'outliers.csv'}
 
-
     numeric_outliers_config = {'detect_and_handle_config': [
         {'zscore': {'columns': ['T', 'Tpot', 'Tdew'], 'handle_method': ['clip', 'clip', 'clip', ], 'threshold': 3}},
         # 气温常接近正态分布，Z-score效果好
         {'iqr': {'columns': ['p', 'VPmax', 'VPact', 'VPdef'], 'handle_method': ['clip', 'clip', 'clip', 'clip', ],
                  'threshold': 1.5}},  # 气压有明确的物理范围，IQR对中等离群值敏感
         {'robust':
-         {'columns': ['rh', 'sh', 'H2OC'], 'handle_method': ['clip', 'clip', 'clip', ], 'quantile_range': (5, 95)}},
+             {'columns': ['rh', 'sh', 'H2OC'], 'handle_method': ['clip', 'clip', 'clip', ], 'quantile_range': (5, 95)}},
         # 分位数检测对分布偏斜
 
-        {'isolationforest': {'columns': ['rho', 'wd'], 'handle_method': ['clip', 'clip', ], 'contamination': 0.025,'random_state':42}},
+        {'isolationforest': {'columns': ['rho', 'wd'], 'handle_method': ['clip', 'clip', ], 'contamination': 0.025,
+                             'random_state': 42}},
         # 对复杂分布效果好
-        {'custom': {'columns': ['wv', 'max. wv'], 'handle_method': ['custom', 'custom'], 'detect_function': partial(detect_, threshold=0),
+        {'custom': {'columns': ['wv', 'max. wv'], 'handle_method': ['custom', 'custom'],
+                    'detect_function': partial(detect_, threshold=0),
                     'handle_function': partial(handle_)}}],
         'generate_outlier_indicator': ['T', 'p']
     }
@@ -96,19 +96,20 @@ def main():
             {'minmax': {'columns': [], 'feature_range': (-1, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
             {'robust': {'columns': [], 'quantile_range': (10, 90)}}
         ],
-        'skip_scale': ['is_night', 'Day_sin', 'Day_cos', 'Year_sin', 'Year_cos','Month_sin','Month_cos']  # 跳过二分类列(数值型）/ 异常值标记列自动skip
+        'skip_scale': ['is_night', 'Day_sin', 'Day_cos', 'Year_sin', 'Year_cos', 'Month_sin', 'Month_cos']
+        # 跳过二分类列(数值型）/ 异常值标记列自动skip
     }
 
     output_config = {
         'T': {'type': 'regression',  # 单变量回归
-              'loss': 'mse',
-              'metrics': ['mae'],
+              'loss': 'mse', # 主损失函数
+              'metrics': ['mae','mape'], # 额外指标：平均绝对误差,平均绝对百分比误差
               'units': 1,  # 每个时间步预测n个特征
               },
 
         'p': {'type': 'regression',
               'loss': 'mse',
-              'metrics': ['mae'],
+              'metrics': ['mae','mape'],
               'units': 1,
               }
     }
@@ -123,23 +124,22 @@ def main():
                       ProblemColumnsFixed(problem_columns=['wv']), SpecialColumnsFixed(problem_columns=['T']),  # wv 一样
                       CheckExtreFeatures(method_config=check_outliers_config,
                                          download_config=download_outliers_details_config),
-
-                      NumericOutlierProcessor(method_config=numeric_outliers_config),
+                      NumericOutlierProcessor(method_config=numeric_outliers_config),  # iqr / 业务初筛 --> 异常值初筛
                       CategoricalOutlierProcessor(method_config=categorical_outliers_config, strategy='consolidate'),
-                      NumericMissingValueHandler(method_config=numeric_missing_config),
-                      CategoricalMissingValueHandler(method_config=None, pass_through=True),
+                      NumericMissingValueHandler(method_config=numeric_missing_config),  # 填充缺失值
+                      CategoricalMissingValueHandler(method_config=None, pass_through=True),  # 后续隔离森林精细去异常
                       ],
          'len_change': False},
 
         {'obj_list': [SystematicResampler(start_index=5, step=6, reset_index=True)], 'len_change': True},
 
-        {'obj_list': [GenerationFromNumeric(dir_cols=['wd'], var_cols=['wv', 'max. wv']),
-                      ProcessTimeseriesColumns(interactive=False, auto_detect_string_format=True),
+        {'obj_list': [GenerationFromNumeric(dir_cols=['wd'], var_cols=['wv', 'max. wv'],plot=False),
+                      ProcessTimeseriesColumns(interactive=False, plot=False),
                       # 关闭交互式功能 + 开启自动检测时间列
                       BasedOnCorrSelector(pass_through=True),
                       UnifiedFeatureScaler(method_config=scaling_config, algorithm='lstm'),  # 自动根据数据分布及算法类型进行推荐标准化
                       CategoricalEncoding(handle_unknown='ignore', unknown_token='__UNKNOWN__'),
-                      VisualizationForNeural(pass_through=False),
+                      VisualizationForNeural(pass_through=True),
                       ], 'len_change': False},
     ]
 
@@ -153,7 +153,7 @@ def main():
 
     # 3. 数据预处理(生成训练、验证、预测数据）
     preprocessor = CompletePreprocessor(preparation_configs)
-    features_temp_train ,_= preprocessor.train(features=df_train, labels=None)
+    features_temp_train, _ = preprocessor.train(features=df_train, labels=None)
 
     # 立即检查状态
     print("=== 训练后立即检查 ===")
@@ -173,8 +173,8 @@ def main():
             except Exception as e:
                 print(f"    ✗ {step_name} 未拟合: {e}")
 
-    features_temp_val ,_= preprocessor.transform_predict(features=df_val, labels=None)
-    features_temp_test,_= preprocessor.transform_predict(features=df_test, labels=None)
+    features_temp_val, _ = preprocessor.transform_predict(features=df_val, labels=None)
+    features_temp_test, _ = preprocessor.transform_predict(features=df_test, labels=None)
 
     num_cols = preprocessor.get_specific_attribute(4, 'engineer_3', 'numeric_columns_')  # 取第5个class的第4步的属性
     cat_cols = preprocessor.get_specific_attribute(4, 'engineer_4', 'categorical_columns_')
@@ -185,9 +185,8 @@ def main():
                          'categorical_columns': cat_cols,
                          'time_column': time_col,
                          'input_width': 6,
-                         'label_width': 5,
+                         'output_width': 5,
                          'shift': 24,
-                         'label_columns': ['T', 'p'],
                          'output_config': output_config,
                          }
 
@@ -220,7 +219,7 @@ def main():
         'verbose': 2
     }}
 
-    data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}# 训练要求验证集
+    data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
 
     def train_single_config(config, X, y, preprocessor, new_data):
         name = config.get('model_type')
