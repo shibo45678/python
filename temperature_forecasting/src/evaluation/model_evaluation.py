@@ -1,5 +1,11 @@
-import numpy as np
+import os
+
+os.environ['PYTHON_THREAD'] = 'child'
+import matplotlib
+
+matplotlib.use('Agg')  # 必须在导入pyplot之前设置
 import matplotlib.pyplot as plt
+import numpy as np
 from typing import Dict
 import tensorflow as tf
 from sklearn.metrics import classification_report, confusion_matrix

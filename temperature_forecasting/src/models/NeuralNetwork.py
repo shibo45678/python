@@ -1,4 +1,6 @@
 import os
+from typing import Dict, Any
+
 import joblib
 from pydantic.v1 import validate_arguments
 from pydantic import Field
@@ -12,7 +14,7 @@ from evaluation.model_evaluation import ModelEvaluation
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 import tensorflow as tf
 import pandas as pd
-from tensorflow.python.keras.regularizers import l2
+from tensorflow.keras.regularizers import l2
 import logging
 
 logger = logging.getLogger(__name__)
@@ -66,7 +68,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                                                                   )
 
         # 1.2 处理窗口数据
-        self.window = self._create_window_generator(self.embedding_info)
+        self.window = self._create_window_generator(self.embedding_info, self.model_config['output_config'])
         train_window_data = self.window.createMultimodalDataset(train_datasets_)
         val_window_data = self.window.createMultimodalDataset(val_datasets_)
 
@@ -141,7 +143,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         return predictions_
 
-    def _create_window_generator(self, embedding_info):
+    def _create_window_generator(self, embedding_info, output_config):
 
         window = EnhancedWindowGenerator(
             input_width=self.model_config['input_width'],
@@ -150,7 +152,8 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             label_columns=list(self.model_config['output_config'].keys()),
             numeric_columns=self.model_config['numeric_columns'],
             categorical_columns=self.model_config['categorical_columns'],
-            embedding_configs=embedding_info
+            embedding_configs=embedding_info,
+            output_configs=output_config
         )
 
         return window
@@ -161,22 +164,21 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         if not hasattr(self, 'best_checkpoint'):
             raise ValueError('未找到最佳模型检查点')  # 现在改为分片 / 训练里面也有
 
-        if hasattr(self.training_model_, '_input_shape'):
-            input_shape = self.training_model_._input_shape
-        else:
-            input_shape = self.training_model_.input_shape[1:]  # 去掉batch维度
-
         # 克隆模型结构
         reconstructed_model = tf.keras.models.clone_model(self.training_model_)
-        reconstructed_model.build((None,) + input_shape)  # 加上 batch
 
-        # 加载权重
-        reconstructed_model.load_weights(self.best_checkpoint)
+        # 如果clone_model没有自动构建，则手动构建
+        if not reconstructed_model.built:
+            reconstructed_model.build(
+                self.training_model_.input_shape)  # input_shape自动去掉了batch [(None, 6, 27), (None, 6)] 数值ndim3+分类ndim2
 
-        # 重新编译（用于预测）
-        self._compile_for_prediction_model(reconstructed_model)
+            # 加载权重
+            reconstructed_model.load_weights(self.best_checkpoint)
 
-        return reconstructed_model
+            # 重新编译（用于预测）
+            self._compile_for_prediction_model(reconstructed_model)
+
+            return reconstructed_model
 
     def evaluate_model(self, dataset, dataset_type='val'):
         """用任意数据评估已训练好的模型"""
@@ -229,7 +231,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         else:
             loss = {}
             for output_name, config in self.model_config['output_config'].items():
-                loss[f'output_{output_name}'] = config.get('loss', self._get_default_loss(config['type']))
+                loss[output_name] = config.get('loss', self._get_default_loss(config['type']))
 
         return loss
 
@@ -237,10 +239,11 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         """统一的metrics配置"""
         if not hasattr(self, 'output_config') or not self.model_config['output_config']:
             metrics = ['mae']  # 重构在训练之后，训练已经检查output_config 不为空
+            return metrics
 
         metrics = {}
         for output_name, config in self.model_config['output_config'].items():
-            metrics[f'output_{output_name}'] = config.get('metrics', self._get_default_metrics(config['type']))
+            metrics[output_name] = config.get('metrics', self._get_default_metrics(config['type']))
 
         return metrics
 
@@ -287,7 +290,12 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                 'input_width': self.window.input_width,
                 'label_width': self.window.label_width,
                 'shift': self.window.shift,
-                'label_columns': self.window.label_columns},
+                'label_columns': self.window.label_columns,
+                'numeric_columns': self.window.numeric_columns,
+                'categorical_columns': self.window.categorical_columns,
+                'embedding_configs': self.window.embedding_configs,
+                'output_configs': self.window.output_configs
+            },
             'compile_config': self._get_compile_config_for_save(),
         }
 
@@ -368,7 +376,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         if hasattr(self, 'weights_path') and os.path.exists(self.weights_path):
             self.prediction_model_ = self.reconstruct_model()
-            self.window = self._create_window_generator(self.embedding_info)
+            self.window = self._create_window_generator(self.embedding_info, self.model_config['output_config'])
 
 
 class EmbeddingConfig:
@@ -379,16 +387,16 @@ class EmbeddingConfig:
         if n_categories <= 2:
             return 1  # 二分类
         elif n_categories <= 5:
-            return 3  # 小类别
+            return max(1, min(2, n_categories - 1))  # 小类别
         elif n_categories <= 10:
-            return 4  # 中等类别
+            return 3  # 中等类别
         elif n_categories <= 20:
-            return 6  # 较大类别
+            return 4  # 较大类别
         elif n_categories <= 50:
-            return 8  # 大类别
+            return 6  # 大类别
         else:
             # 谷歌研究公式：1.6 * n_categories^0.56
-            return min(50, int(1.6 * n_categories ** 0.56))
+            return min(50, int(1.6 * n_categories ** 0.56))  # 保守的公式 min(8, int(0.8 * n_categories ** 0.4))
 
     @staticmethod
     def should_use_embedding(n_categories: int, unique_ratio: float) -> bool:
@@ -396,28 +404,38 @@ class EmbeddingConfig:
         判断是否应该使用Embedding
         unique_ratio: 唯一值数量 / 总样本数
         """
-        # 高基数或中等基数都推荐使用Embedding
-        return n_categories >= 2 and unique_ratio < 0.5
+
+        if n_categories <= 5:
+            return unique_ratio < 0.1
+        elif n_categories <= 20:  # 高基数或中等基数都推荐使用Embedding
+            return unique_ratio < 0.3
+        else:
+            return unique_ratio < 0.5
 
     @staticmethod
     def _get_embedding_info(dataset: pd.DataFrame, cat_cols: list):
-        embedding_configs = {}
+        embedding_configs: Dict[str, Dict[str, Any]] = {}
 
         if cat_cols and isinstance(dataset, pd.DataFrame):
 
             for col in cat_cols:
                 series = dataset[col].dropna()
-                n_categories = series.nunique()
+                n_categories = int(series.nunique())
                 unique_ratio = n_categories / len(series)
 
-                base_config = {
+                base_config: Dict[str, Any] = {
                     'input_dim': n_categories + 1,  # 已经预留了一个__UNKNOWN__ 不代表训练集就有n+1个种类，算的是(实际数据集中的种类数+1)
                     'name': f'embedding_{col}'
                 }
 
                 if EmbeddingConfig.should_use_embedding(n_categories, unique_ratio):
                     base_config['output_dim'] = EmbeddingConfig.get_embedding_dim(n_categories)
-                else: # 轻量Embedding
+
+                    # 自动添加正则化
+                    if n_categories <= 10:  # 小到中等类别
+                        base_config['embeddings_regularizer'] = l2(0.001)
+
+                else:  # 轻量Embedding
                     base_config.update({
                         'output_dim': max(1, min(2, n_categories // 20)),
                         'embeddings_regularizer': l2(0.1)  # 强正则化(output_dim 从3->1)

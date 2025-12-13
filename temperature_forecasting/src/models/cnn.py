@@ -23,14 +23,14 @@ class CnnModel:
 
     def __init__(self,
                  architecture_type,  # 'sequential' / 'mixed'
-                 config=None,**kwargs):
+                 config=None, **kwargs):
 
         if architecture_type == 'sequential':
             self.model = self._build_sequential_model(config)
         elif architecture_type == 'parallel':
             self.model = self._build_parallel_model(config)
         else:
-            self.model =None # 不构建 留给子类
+            self.model = None  # 不构建 留给子类
 
     """=====================参数验证====================="""
 
@@ -256,7 +256,7 @@ class EnhancedCnnModel(CnnModel):
         numeric_columns: List[str] = Field(default=[], description="数值列名称")
         categorical_columns: List[str] = Field(default=[], description="分类列名称")
         embedding_configs: Dict[str, Dict] = Field(default={},
-                                                description="分类列信息 {input_dim,input_length,output_dim,embeddings_regularizer}}")
+                                                   description="分类列信息 {input_dim,input_length,output_dim,embeddings_regularizer}}")
         output_config: Dict[str, Dict] = Field(...,
                                                description="输出配置 {输出列: {type: regression/classification,binary_classification ...}}")
         learning_rate: float = Field(default=0.001)
@@ -304,14 +304,14 @@ class EnhancedCnnModel(CnnModel):
 
             return v
 
-    def __init__(self,architecture_type = 'enhance_parallel',config=None,**kwargs):
+    def __init__(self, architecture_type='enhance_parallel', config=None, **kwargs):
         """
         参数:
         ----------
         architecture_type: str
         模型架构类型: 'sequential', 'parallel', 'enhance_parallel'(增加分类特征的embedding）
         """
-        kwargs['config'] = config # 重要：传递 config 给父类
+        kwargs['config'] = config  # 重要：传递 config 给父类
         kwargs['architecture_type'] = architecture_type
 
         super().__init__(**kwargs)
@@ -320,9 +320,7 @@ class EnhancedCnnModel(CnnModel):
 
         self.model = self._build_multi_modal_cnn_model()
 
-
     def _build_multi_modal_cnn_model(self) -> tf.keras.Model:
-
 
         input_width = self.model_config.input_width
         output_width = self.model_config.output_width
@@ -432,10 +430,10 @@ class EnhancedCnnModel(CnnModel):
                     kernel_size=1,
                     activation='linear',
                     padding='same',
-                    name=f'output_{output_name}'
+                    name=output_name
                 )(x)
-                loss_dict[f'output_{output_name}'] = config.get('loss', 'mse')
-                metric_dict[f'output_{output_name}'] = config.get('metrics', ['mae','mape'])
+                loss_dict[output_name] = config.get('loss', 'mse')
+                metric_dict[output_name] = config.get('metrics', ['mae'])
 
             elif config['type'] == 'classification':
                 # 分类任务：输出 (batch_size, output_timesteps, num_classes)
@@ -444,10 +442,10 @@ class EnhancedCnnModel(CnnModel):
                     kernel_size=1,
                     activation='softmax',
                     padding='same',
-                    name=f'output_{output_name}'
+                    name=output_name
                 )(x)
-                loss_dict[f'output_{output_name}'] = config.get('loss', 'sparse_categorical_crossentropy')
-                metric_dict[f'output_{output_name}'] = config.get('metrics', ['accuracy'])
+                loss_dict[output_name] = config.get('loss', 'sparse_categorical_crossentropy')
+                metric_dict[output_name] = config.get('metrics', ['accuracy'])
 
             elif config['type'] == 'binary_classification':
                 output_layer = tf.keras.layers.Conv1D(
@@ -455,10 +453,10 @@ class EnhancedCnnModel(CnnModel):
                     kernel_size=1,
                     activation='sigmoid',
                     padding='same',
-                    name=f'output_{output_name}'
+                    name=output_name
                 )(x)
-                loss_dict[f'output_{output_name}'] = config.get('loss', 'binary_crossentropy')
-                metric_dict[f'output_{output_name}'] = config.get('metrics', ['accuracy'])
+                loss_dict[output_name] = config.get('loss', 'binary_crossentropy')
+                metric_dict[output_name] = config.get('metrics', ['accuracy'])
 
             else:
                 # 默认情况：使用回归配置
@@ -467,10 +465,10 @@ class EnhancedCnnModel(CnnModel):
                     kernel_size=1,
                     activation='linear',
                     padding='same',
-                    name=f'output_{output_name}'
+                    name=output_name
                 )(x)
-                loss_dict[f'output_{output_name}'] = config.get('loss', 'mse')
-                metric_dict[f'output_{output_name}'] = config.get('metrics', ['mae','mape'])
+                loss_dict[output_name] = config.get('loss', 'mse')
+                metric_dict[output_name] = config.get('metrics', ['mae'])
 
             outputs.append(output_layer)
 
@@ -480,6 +478,7 @@ class EnhancedCnnModel(CnnModel):
         # 不同的编译器
         model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
                       loss=loss_dict,  # Keras通过输出层的name来匹配loss和metrics
+                      loss_weights={'T': 1.0, 'p': 3},
                       metrics=metric_dict)
 
         return model

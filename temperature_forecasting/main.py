@@ -90,10 +90,10 @@ def main():
     scaling_config = {
         'transformers': [
             {'standard': {
-                'columns': ['T', 'p', 'Tpot', 'Tdew', 'wv_x', 'wv_y', 'max. wv_x', 'max. wv_y']}},
+                'columns': ['p', 'Tpot', 'Tdew', 'wv_x', 'wv_y', 'max. wv_x', 'max. wv_y']}},
             {'minmax': {'columns': ['rh', 'VPmax', 'Vpact', 'VPdef', 'sh', 'H2OC', 'rho'], 'feature_range': (0, 1)}},
             # 相同方法，相同其他参数配置，在columns列表填写
-            {'minmax': {'columns': [], 'feature_range': (-1, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
+            {'minmax': {'columns': ['T'], 'feature_range': (-1, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
             {'robust': {'columns': [], 'quantile_range': (10, 90)}}
         ],
         'skip_scale': ['is_night', 'Day_sin', 'Day_cos', 'Year_sin', 'Year_cos', 'Month_sin', 'Month_cos']
@@ -102,14 +102,14 @@ def main():
 
     output_config = {
         'T': {'type': 'regression',  # 单变量回归
-              'loss': 'mse', # 主损失函数
-              'metrics': ['mae','mape'], # 额外指标：平均绝对误差,平均绝对百分比误差
+              'loss': 'mse',  # 主损失函数
+              'metrics': ['mae'],  # 额外指标：平均绝对误差
               'units': 1,  # 每个时间步预测n个特征
               },
 
         'p': {'type': 'regression',
               'loss': 'mse',
-              'metrics': ['mae','mape'],
+              'metrics': ['mae'],
               'units': 1,
               }
     }
@@ -133,7 +133,7 @@ def main():
 
         {'obj_list': [SystematicResampler(start_index=5, step=6, reset_index=True)], 'len_change': True},
 
-        {'obj_list': [GenerationFromNumeric(dir_cols=['wd'], var_cols=['wv', 'max. wv'],plot=False),
+        {'obj_list': [GenerationFromNumeric(dir_cols=['wd'], var_cols=['wv', 'max. wv'], plot=False),
                       ProcessTimeseriesColumns(interactive=False, plot=False),
                       # 关闭交互式功能 + 开启自动检测时间列
                       BasedOnCorrSelector(pass_through=True),
@@ -201,23 +201,23 @@ def main():
         'verbose': 2
     }}
 
-    lstm_model_config1 = {**base_model_config, **{
-        'model_type': 'lstm1',
-        'learning_rate': 0.001,
-        'units': [64],  # len控制lstm的层数
-        'return_sequences': [False],
-        'epochs': 100,
-        'verbose': 2
-    }}
+    # lstm_model_config1 = {**base_model_config, **{
+    #     'model_type': 'lstm1',
+    #     'learning_rate': 0.001,
+    #     'units': [64],  # len控制lstm的层数
+    #     'return_sequences': [False],
+    #     'epochs': 30,
+    #     'verbose': 2
+    # }}
 
-    lstm_model_config2 = {**base_model_config, **{
-        'model_type': 'lstm2',
-        'learning_rate': 0.001,
-        'units': [64, 32],  # 逐步压缩特征
-        'return_sequences': [True, False],  # 上一轮的输出做本轮输入input + 上一轮输出
-        'epochs': 100,
-        'verbose': 2
-    }}
+    # lstm_model_config2 = {**base_model_config, **{
+    #     'model_type': 'lstm2',
+    #     'learning_rate': 0.001,
+    #     'units': [64, 32],  # 逐步压缩特征
+    #     'return_sequences': [True, False],  # 上一轮的输出做本轮输入input + 上一轮输出
+    #     'epochs': 30,
+    #     'verbose': 2
+    # }}
 
     data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
 
@@ -245,7 +245,7 @@ def main():
 
         return inverse_2
 
-    configs = [cnn_model_config, lstm_model_config1, lstm_model_config2]
+    configs = [cnn_model_config] # , lstm_model_config1, lstm_model_config2
 
     failed_configs = []
     trained_models = []
@@ -268,4 +268,11 @@ def main():
 
 
 if __name__ == "__main__":
+    import matplotlib
+    matplotlib.use('Agg')
     main()
+
+
+# 季节不做分类，做正余弦
+# save的节点 是否是最佳模型
+# 多变量输出 如何协调权重，以及梯度剪裁

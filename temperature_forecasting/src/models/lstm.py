@@ -5,6 +5,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class LstmModel:
     def __init__(self):
         self.model = None
@@ -83,12 +84,13 @@ class LstmModel:
 class EnhancedLstmModel(LstmModel):
     class MultiModalConfig(LstmModel.SequentialConfig):
         input_width: int = Field(default=6)
-        output_width: int= Field(default=5, description="输出时间步步长。例如 5 表示预测5个时间步，每个时间步一个值")
+        output_width: int = Field(default=5, description="输出时间步步长。例如 5 表示预测5个时间步，每个时间步一个值")
         numeric_columns: List[str] = Field(default=[])
         categorical_columns: List[str] = Field(default=[])
         embedding_configs: Dict[str, Dict] = Field(default={},
                                                    description="分类列信息 {input_dim,input_length,output_dim,embeddings_regularizer}}")
-        output_config: Dict[str, Dict] = Field(..., description="输出配置 {输出列: {type: regression/classification, ...}}")
+        output_config: Dict[str, Dict] = Field(...,
+                                               description="输出配置 {输出列: {type: regression/classification, ...}}")
         learning_rate: float = Field(default=0.001)
         '''
         同CNN
@@ -112,7 +114,7 @@ class EnhancedLstmModel(LstmModel):
 
     def _build_multi_modal_lstm_model(self, config: dict = None):
         model_config = self.MultiModalConfig(**(config or {}))
-        input_width=model_config.input_width
+        input_width = model_config.input_width
         output_width = model_config.output_width
         num_cols = model_config.numeric_columns
         cat_cols = model_config.categorical_columns
@@ -170,10 +172,10 @@ class EnhancedLstmModel(LstmModel):
                                                      name=f'dense_{output_name}')(x)
                 output_layer = tf.keras.layers.Reshape((output_width, num_label),
                                                        name=f'reshape_{output_name}')(output_layer)
-                output_layer = tf.keras.layers.Activation('linear', name=f'activation_{output_name}')(output_layer)
+                output_layer = tf.keras.layers.Activation('linear', name=output_name)(output_layer)
 
-                loss_dict[f'output_{output_name}'] = config.get('loss', 'mse')
-                metric_dict[f'output_{output_name}'] = config.get('metrics', ['mae','mape'])
+                loss_dict[output_name] = config.get('loss', 'mse')
+                metric_dict[output_name] = config.get('metrics', ['mae'])
 
             # 分类任务: 输出形状 (batch_size, 5, n_categories)
             elif config['type'] == 'classification':
@@ -181,29 +183,30 @@ class EnhancedLstmModel(LstmModel):
                                                      name=f'dense_{output_name}')(x)
                 output_layer = tf.keras.layers.Reshape((output_width, config['num_classes']),
                                                        name=f'reshape_{output_name}')(output_layer)
-                output_layer = tf.keras.layers.Activation('softmax', name=f'activation_{output_name}')(output_layer)
+                output_layer = tf.keras.layers.Activation('softmax', name=output_name)(
+                    output_layer)  # Keras模型输出名称由最后一个被命名的层决定
 
-                loss_dict[f'output_{output_name}'] = config.get('loss', 'sparse_categorical_crossentropy')
-                metric_dict[f'output_{output_name}'] = config.get('metrics', ['accuracy'])
+                loss_dict[output_name] = config.get('loss', 'sparse_categorical_crossentropy')
+                metric_dict[output_name] = config.get('metrics', ['accuracy'])
 
             elif config['type'] == 'binary_classification':
                 output_layer = tf.keras.layers.Dense(output_width * config['num_classes'],
                                                      name=f'dense_{output_name}')(x)
                 output_layer = tf.keras.layers.Reshape((output_width, config['num_classes']),
                                                        name=f'reshape_{output_name}')(output_layer)
-                output_layer = tf.keras.layers.Activation('sigmoid', name=f'activation_{output_name}')(output_layer)
-                loss_dict[f'output_{output_name}'] = config.get('loss', 'binary_crossentropy')
-                metric_dict[f'output_{output_name}'] = config.get('metrics', ['accuracy'])
+                output_layer = tf.keras.layers.Activation('sigmoid', name=output_name)(output_layer)
+                loss_dict[output_name] = config.get('loss', 'binary_crossentropy')
+                metric_dict[output_name] = config.get('metrics', ['accuracy'])
 
             else:
                 output_layer = tf.keras.layers.Dense(output_width * num_label,
                                                      name=f'dense_{output_name}')(x)
                 output_layer = tf.keras.layers.Reshape((output_width, num_label),
                                                        name=f'reshape_{output_name}')(output_layer)
-                output_layer = tf.keras.layers.Activation('linear', name=f'activation_{output_name}')(output_layer)
+                output_layer = tf.keras.layers.Activation('linear', name=output_name)(output_layer)
 
-                loss_dict[f'output_{output_name}'] = config.get('loss', 'mse')
-                metric_dict[f'output_{output_name}'] = config.get('metrics', ['mae','mape'])
+                loss_dict[output_name] = config.get('loss', 'mse')
+                metric_dict[output_name] = config.get('metrics', ['mae'])
 
             outputs.append(output_layer)
 
@@ -213,6 +216,7 @@ class EnhancedLstmModel(LstmModel):
         model.compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
             loss=loss_dict,
+            loss_weights={'T': 1.0, 'p': 3},
             metrics=metric_dict  # 简化处理
         )
 
