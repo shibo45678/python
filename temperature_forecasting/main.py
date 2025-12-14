@@ -53,15 +53,16 @@ def main():
         'filename': 'outliers.csv'}
 
     numeric_outliers_config = {'detect_and_handle_config': [
-        {'zscore': {'columns': ['T', 'Tpot', 'Tdew'], 'handle_method': ['clip', 'clip', 'clip', ], 'threshold': 3}},
+        {'zscore': {'columns': ['T', 'Tpot', 'Tdew'], 'handle_method': ['clip', 'clip', 'clip'], 'threshold': 3}},
         # 气温常接近正态分布，Z-score效果好
-        {'iqr': {'columns': ['p', 'VPmax', 'VPact', 'VPdef'], 'handle_method': ['clip', 'clip', 'clip', 'clip', ],
-                 'threshold': 1.5}},  # 气压有明确的物理范围，IQR对中等离群值敏感
+        {'iqr': {'columns': ['p', 'VPmax', 'VPact', 'VPdef'], 'handle_method': ['clip', 'clip', 'clip', 'clip'],
+                 'threshold': 1.5, 'handle_function': partial(handle_)}},  # 气压有明确的物理范围，IQR对中等离群值敏感
         {'robust':
-             {'columns': ['rh', 'sh', 'H2OC'], 'handle_method': ['clip', 'clip', 'clip', ], 'quantile_range': (5, 95)}},
+             {'columns': ['rh', 'sh', 'H2OC'], 'handle_method': ['clip', 'clip', 'clip'],
+              'quantile_range': (5, 95), }},
         # 分位数检测对分布偏斜
 
-        {'isolationforest': {'columns': ['rho', 'wd'], 'handle_method': ['clip', 'clip', ], 'contamination': 0.025,
+        {'isolationforest': {'columns': ['rho', 'wd'], 'handle_method': ['clip', 'clip'], 'contamination': 0.025,
                              'random_state': 42}},
         # 对复杂分布效果好
         {'custom': {'columns': ['wv', 'max. wv'], 'handle_method': ['custom', 'custom'],
@@ -100,19 +101,6 @@ def main():
         # 跳过二分类列(数值型）/ 异常值标记列自动skip
     }
 
-    output_config = {
-        'T': {'type': 'regression',  # 单变量回归
-              'loss': 'mse',  # 主损失函数
-              'metrics': ['mae'],  # 额外指标：平均绝对误差
-              'units': 1,  # 每个时间步预测n个特征
-              },
-
-        'p': {'type': 'regression',
-              'loss': 'mse',
-              'metrics': ['mae'],
-              'units': 1,
-              }
-    }
     # 先初始化 再延迟计算（lazy evaluation）
     preparation_configs = [
         {'obj_list': [DescribeData(log_level="DEBUG"), DeleteUselessCols()], 'len_change': False},
@@ -181,43 +169,60 @@ def main():
     time_col = preprocessor.get_specific_attribute(4, 'engineer_1', 'valid_time_column_')
 
     # 4. 并行模型训练、评估
-    base_model_config = {'numeric_columns': num_cols,
-                         'categorical_columns': cat_cols,
-                         'time_column': time_col,
-                         'input_width': 6,
-                         'output_width': 5,
-                         'shift': 24,
-                         'output_config': output_config,
-                         }
-
-    cnn_model_config = {**base_model_config, **{
-        'model_type': 'cnn',
-        'branch_filters': [[32, 32], [64, 64]],
-        'branch_kernels': [[2, 3], [2, 3]],
-        'branch_dilation_rate': [[1, 1], [1, 1]],
-        'activation': 'relu',
-        'learning_rate': 0.001,
-        'epochs': 20,
-        'verbose': 2
-    }}
-
-    # lstm_model_config1 = {**base_model_config, **{
-    #     'model_type': 'lstm1',
-    #     'learning_rate': 0.001,
-    #     'units': [64],  # len控制lstm的层数
+    # single_base_model_config = {'numeric_columns': num_cols,
+    #                             'categorical_columns': cat_cols,
+    #                             'time_column': time_col,
+    #                             'input_width': 6,
+    #                             'output_width': 5,
+    #                             'shift': 24,
+    #                             'output_config': {
+    #                                 'T': {'type': 'regression',
+    #                                       'loss': 'mse',
+    #                                       'metrics': ['mae'],
+    #                                       'units': 1,
+    #                                       }},
+    #                             'multi_tasks':False}
+    #
+    # single_lstm_model_config1 = {**single_base_model_config, **{
+    #     'model_type': 'single_lstm1',
+    #     'learning_rate': 0.00035,
+    #     'units': [192],  # len控制lstm的层数
     #     'return_sequences': [False],
     #     'epochs': 30,
     #     'verbose': 2
     # }}
 
-    # lstm_model_config2 = {**base_model_config, **{
-    #     'model_type': 'lstm2',
-    #     'learning_rate': 0.001,
-    #     'units': [64, 32],  # 逐步压缩特征
-    #     'return_sequences': [True, False],  # 上一轮的输出做本轮输入input + 上一轮输出
-    #     'epochs': 30,
-    #     'verbose': 2
-    # }}
+    multi_base_model_config = {'numeric_columns': num_cols,
+                               'categorical_columns': cat_cols,
+                               'time_column': time_col,
+                               'input_width': 6,
+                               'output_width': 5,
+                               'shift': 24,
+
+                               'output_config': {
+                                   'T': {'type': 'regression',  # 单变量回归
+                                         'loss': 'mse',  # 主损失函数
+                                         'metrics': ['mae'],  # 额外指标：平均绝对误差
+                                         'units': 1,  # 每个时间步预测n个特征
+                                         },
+
+                                   'p': {'type': 'regression',
+                                         'loss': 'mse',
+                                         'metrics': ['mae'],
+                                         'units': 1,
+                                         }
+                               },
+                               'multi_tasks': True,
+                               }
+
+    multi_lstm_model_config1 = {**multi_base_model_config, **{
+        'model_type': 'multi_lstm1',
+        'learning_rate': 0.00035,
+        'units': [192],  # len控制lstm的层数
+        'return_sequences': [False],
+        'epochs': 30,
+        'verbose': 2
+    }}
 
     data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
 
@@ -245,7 +250,7 @@ def main():
 
         return inverse_2
 
-    configs = [cnn_model_config] # , lstm_model_config1, lstm_model_config2
+    configs = [multi_lstm_model_config1]  # multi_cnn_model_config
 
     failed_configs = []
     trained_models = []
@@ -269,10 +274,29 @@ def main():
 
 if __name__ == "__main__":
     import matplotlib
+
     matplotlib.use('Agg')
     main()
 
-
-# 季节不做分类，做正余弦
 # save的节点 是否是最佳模型
 # 多变量输出 如何协调权重，以及梯度剪裁
+
+# multi_lstm_model_config2 = {**base_model_config, **{
+#     'model_type': 'multi_lstm2',
+#     'learning_rate': 0.001,
+#     'units': [64, 32],  # 逐步压缩特征
+#     'return_sequences': [True, False],  # 上一轮的输出做本轮输入input + 上一轮输出
+#     'epochs': 50,
+#     'verbose': 2
+# }}
+
+# multi_cnn_model_config = {**base_model_config, **{
+#     'model_type': 'cnn',
+#     'branch_filters': [[32, 32], [64, 64]],
+#     'branch_kernels': [[2, 3], [2, 3]],
+#     'branch_dilation_rate': [[1, 1], [1, 1]],
+#     'activation': 'relu',
+#     'learning_rate': 0.001,
+#     'epochs': 20,
+#     'verbose': 2
+# }}

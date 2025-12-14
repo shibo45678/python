@@ -6,9 +6,9 @@ from pydantic.v1 import validate_arguments
 from pydantic import Field
 from sklearn.utils.validation import check_is_fitted
 from data.decorator import validate_input
-from models.cnn import EnhancedCnnModel
-from models.lstm import EnhancedLstmModel
-from training.training_models import TrainingModel
+from models.cnn import MultiTasksCnnModel
+from models.lstm import SingleTaskLstmModel,MultiTasksLstmModel
+from training.training_models import TrainingMultiModel,TrainingSingleModel
 from data.windows import WindowGenerator, EnhancedWindowGenerator
 from evaluation.model_evaluation import ModelEvaluation
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
@@ -72,31 +72,53 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         train_window_data = self.window.createMultimodalDataset(train_datasets_)
         val_window_data = self.window.createMultimodalDataset(val_datasets_)
 
-        # 1.3 选择模型
-        if self.model_config['model_type'].startswith('cnn'):
-            cnn_model_config = {**self.model_config,  # 解包
-                                'embedding_configs': self.embedding_info}  # 追加
-            cnn_model = EnhancedCnnModel(architecture_type='enhance_parallel', config=cnn_model_config)
-            cnn_model_ = cnn_model._build_multi_modal_cnn_model()
-            self.training_model_ = cnn_model_
+        # 多任务
+        if self.model_config['multi_tasks']:
 
-        elif self.model_config['model_type'].startswith('lstm'):
-            lstm_model_config = {**self.model_config,
-                                 'embedding_configs': self.embedding_info}
-            lstm_model = EnhancedLstmModel()
-            lstm_model_ = lstm_model._build_multi_modal_lstm_model(lstm_model_config)
-            self.training_model_ = lstm_model_
+            if self.model_config['model_type'].startswith('multi_lstm'):
+                lstm_model_config = {**self.model_config,
+                                     'embedding_configs': self.embedding_info}
+                lstm_model = MultiTasksLstmModel(lstm_model_config)
+                lstm_model_ = lstm_model._build_lstm_model()
+                self.training_model_ = lstm_model_
 
-        # 1.4 训练模型
-        # 确保目录存在(立即创建)
-        os.makedirs(self.weights_dir, exist_ok=True)
-        self.history_, best_checkpoint = TrainingModel(model_name=self.model_config['model_type'],
-                                                       model=self.training_model_,
-                                                       trainset=train_window_data,
-                                                       valset=val_window_data,
-                                                       verbose=self.model_config['verbose'],
-                                                       epochs=self.model_config['epochs'],
-                                                       weights_dir=self.weights_dir)  # 目录
+            elif self.model_config['model_type'].startswith('multi_cnn'):
+                cnn_model_config = {**self.model_config,  # 解包
+                                    'embedding_configs': self.embedding_info}  # 追加
+                cnn_model = MultiTasksCnnModel(architecture_type='enhance_parallel', config=cnn_model_config)
+                cnn_model_ = cnn_model._build_cnn_model()
+                self.training_model_ = cnn_model_
+
+            # 1.4 训练模型
+            # 确保目录存在(立即创建)
+            os.makedirs(self.weights_dir, exist_ok=True)
+            self.history_, best_checkpoint = TrainingMultiModel(model_name=self.model_config['model_type'],
+                                                           model=self.training_model_,
+                                                           trainset=train_window_data,
+                                                           valset=val_window_data,
+                                                           verbose=self.model_config['verbose'],
+                                                           epochs=self.model_config['epochs'],
+                                                           weights_dir=self.weights_dir)
+        # 单任务
+        else:
+            if self.model_config['model_type'].startswith('single_lstm'):
+                lstm_model_config = {**self.model_config,
+                                     'embedding_configs': self.embedding_info}
+                lstm_model = SingleTaskLstmModel(lstm_model_config)
+                lstm_model_ = lstm_model._build_lstm_model()
+                self.training_model_ = lstm_model_
+
+            os.makedirs(self.weights_dir, exist_ok=True)
+            self.history_, best_checkpoint = TrainingSingleModel(model_name=self.model_config['model_type'],
+                                                                model=self.training_model_,
+                                                                trainset=train_window_data,
+                                                                valset=val_window_data,
+                                                                verbose=self.model_config['verbose'],
+                                                                epochs=self.model_config['epochs'],
+                                                                weights_dir=self.weights_dir)
+
+
+
         # 保存最佳检查点路径供后续使用
         self.best_checkpoint = best_checkpoint
 
@@ -119,14 +141,14 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         time_column_X_ = X_[self.model_config['time_column']]
 
         # 1. 处理窗口数据
-        predict_window_data = self.window.createDataset(X_model)
+        predict_window_data = self.window.createMultimodalDataset(X_model)
 
         # 2. 重构模型
         if self.prediction_model_ is None:
             self._prediction_model = self.reconstruct_model()  # 确保使用最佳权重
 
         # 3. 模型预测
-        predictions = self._prediction_model.predict(predict_window_data)
+        predictions = self._prediction_model.predict(predict_window_data)  # 多输入和输出（tuple,dict）->预测结果是list
 
         # 4. 恢复未使用时间列
         historical_timestamps = time_column_X_.copy()
@@ -164,31 +186,64 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         if not hasattr(self, 'best_checkpoint'):
             raise ValueError('未找到最佳模型检查点')  # 现在改为分片 / 训练里面也有
 
-        # 克隆模型结构
-        reconstructed_model = tf.keras.models.clone_model(self.training_model_)
+        checkpoint_dir = self.best_checkpoint
+        keras_file = os.path.join(checkpoint_dir, 'model.keras')  # 现在保存的是.keras格式，需要找到具体的.keras文件
 
-        # 如果clone_model没有自动构建，则手动构建
-        if not reconstructed_model.built:
-            reconstructed_model.build(
-                self.training_model_.input_shape)  # input_shape自动去掉了batch [(None, 6, 27), (None, 6)] 数值ndim3+分类ndim2
+        if not os.path.exists(keras_file):
+            raise FileNotFoundError(
+                f"找不到.keras模型文件: {keras_file}\n"
+                f"目录内容: {os.listdir(checkpoint_dir)}"
+            )
+        model = tf.keras.models.load_model(keras_file)
+        #     # 如果找不到.keras文件，尝试找其他格式
+        #     possible_files = [
+        #         os.path.join(checkpoint_dir, 'model.keras'),
+        #         os.path.join(checkpoint_dir, 'weights.h5'),
+        #         os.path.join(checkpoint_dir, 'model.weights.h5'),
+        #         os.path.join(checkpoint_dir, 'model.h5')
+        #     ]
+        #
+        #     found_file = None
+        #     for filepath in possible_files:
+        #         if os.path.exists(filepath):
+        #             found_file = filepath
+        #             break
+        #
+        #     if not found_file:
+        #         raise FileNotFoundError(f"在目录 {checkpoint_dir} 中找不到模型文件")
+        #
+        #     model_file = found_file
+        #
+        # # 根据文件类型加载模型
+        # if model_file.endswith('.keras'):
+        #     # .keras文件包含完整的模型，可以不用克隆，适合大模型
+        #     reconstructed_model = tf.keras.models.load_model(model_file)
+        # else:
+        #     # .h5文件只包含权重，需要重建架构
+        #     # 如果clone_model没有自动构建，则手动构建
+        #     reconstructed_model = tf.keras.models.clone_model(self.training_model_)
+        #     if not reconstructed_model.built:
+        #         reconstructed_model.build(self.training_model_.input_shape) # input_shape自动去掉了batch [(None, 6, 27), (None, 6)] 数值ndim3+分类ndim2
+        #     reconstructed_model.load_weights(model_file) # load_weights 需要具体文件
 
-            # 加载权重
-            reconstructed_model.load_weights(self.best_checkpoint)
+        # 重新编译（用于预测）
+        self._compile_for_prediction_model(model)
 
-            # 重新编译（用于预测）
-            self._compile_for_prediction_model(reconstructed_model)
-
-            return reconstructed_model
+        return model
 
     def evaluate_model(self, dataset, dataset_type='val'):
         """用任意数据评估已训练好的模型"""
-        model = self.reconstruct_model()
+        if not self._prediction_model:
+            model = self.reconstruct_model()
+        else:
+            model = self._prediction_model
 
-        metrics = ModelEvaluation(self.model_config['output_config'], model_name=self.model_config['model_name'])
-        metrics.comprehensive_model_evaluation(model=model,  # 评估 best_model
-                                               window=self.window,
-                                               dataset=dataset,
-                                               dataset_type=dataset_type)
+        metrics = ModelEvaluation(self.model_config['output_config'], model_name=self.model_config['model_type'])
+        details = metrics.comprehensive_model_evaluation(model=model,  # 评估 best_model
+                                                         window=self.window,
+                                                         dataset=dataset,
+                                                         dataset_type=dataset_type)
+        return details
 
     def _generate_future_timestamps(self, last_time, n_steps, freq):
         return pd.date_range(start=last_time + self.model_config['shift'], periods=n_steps, freq=6 * freq)
@@ -377,6 +432,74 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         if hasattr(self, 'weights_path') and os.path.exists(self.weights_path):
             self.prediction_model_ = self.reconstruct_model()
             self.window = self._create_window_generator(self.embedding_info, self.model_config['output_config'])
+
+    # def get_deployment_model(self):
+    #     """获取部署用的SavedModel路径"""
+    #
+    #     if not hasattr(self, 'best_checkpoint'):
+    #         raise ValueError('未找到最佳模型检查点')
+    #
+    #     savedmodel_dir = os.path.join(self.best_checkpoint, 'saved_model')
+    #
+    #     if not os.path.exists(savedmodel_dir):
+    #         raise FileNotFoundError(
+    #             f"找不到SavedModel目录: {savedmodel_dir}\n"
+    #             "请在训练回调中确保同时保存了SavedModel格式"
+    #         )
+    #
+    #     # 验证SavedModel格式
+    #     if not os.path.exists(os.path.join(savedmodel_dir, 'saved_model.pb')):
+    #         raise ValueError(f"不是有效的SavedModel格式: {savedmodel_dir}")
+    #
+    #     print(f"✅ 部署模型位置: {savedmodel_dir}")
+    #     return savedmodel_dir
+    #
+    # def deploy_with_tensorflow_serving(self):
+    #     """生成TensorFlow Serving部署命令"""
+    #
+    #     savedmodel_dir = self.get_deployment_model()
+    #
+    #     # 提取模型名（用于Serving）
+    #     model_name = os.path.basename(os.path.dirname(savedmodel_dir))
+    #
+    #     docker_cmd = f"""
+    # # TensorFlow Serving 部署命令
+    # docker run -p 8501:8501 \\
+    #   --mount type=bind,source={os.path.abspath(savedmodel_dir)},target=/models/{model_name} \\
+    #   -e MODEL_NAME={model_name} \\
+    #   -t tensorflow/serving:latest
+    # """
+    #
+    #     logger.debug("=" * 60)
+    #     logger.debug("TensorFlow Serving 部署命令:")
+    #     logger.debug("=" * 60)
+    #     logger.debug(docker_cmd)
+    #     logger.debug"=" * 60)
+    #     logger.debug(f"REST API端点: http://localhost:8501/v1/models/{model_name}:predict")
+    #     logger.debug(f"gRPC端点: localhost:8500")
+    #     logger.debug("=" * 60)
+    #
+    #     return docker_cmd
+
+    # def predict_via_savedmodel(self, X):
+    #     """通过SavedModel预测（测试部署兼容性）"""
+    #     savedmodel_dir = self.get_deployment_model() # 直接使用保存的SavedModel
+    #
+    #     # 加载SavedModel
+    #     model = tf.saved_model.load(savedmodel_dir)
+    #     serve_fn = model.signatures['serve']
+    #
+    #     # 转换输入格式
+    #     if isinstance(X, (list, tuple)):
+    #         # 多输入
+    #         numeric_input = tf.convert_to_tensor(X[0], dtype=tf.float32)
+    #         categorical_input = tf.convert_to_tensor(X[1], dtype=tf.float32)
+    #         result = serve_fn(numeric_input, categorical_input)
+    #     else:
+    #         # 单输入
+    #         result = serve_fn(X)
+    #
+    #     return result.numpy()
 
 
 class EmbeddingConfig:

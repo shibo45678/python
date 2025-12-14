@@ -4,16 +4,18 @@ os.environ['PYTHON_THREAD'] = 'child'
 import matplotlib
 
 matplotlib.use('Agg')  # 必须在导入pyplot之前设置
-import matplotlib.pyplot as plt
 import numpy as np
 from typing import Dict
 import tensorflow as tf
 from sklearn.metrics import classification_report, confusion_matrix
 from data.windows import WindowGenerator
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ModelEvaluation:
-    def __init__(self, output_configs: Dict, model_name: str = "cnn"):
+    def __init__(self, output_configs: Dict, model_name: str):
         self.output_configs = output_configs
         self.model_name = model_name
         self.task_order = list(output_configs.keys())
@@ -25,9 +27,9 @@ class ModelEvaluation:
                                        dataset_type: str
                                        ) -> Dict:
         # 1. 基础评估
-        print("=" * 60)
-        print(f"开始评估 {self.model_name}")
-        print("=" * 60)
+        logger.debug("=" * 60)
+        logger.debug(f"开始评估 {self.model_name}")
+        logger.debug("=" * 60)
 
         task_metrics = self._evaluate_multi_task_model(model, window, dataset, dataset_type)
 
@@ -42,16 +44,16 @@ class ModelEvaluation:
         }
 
     def _print_summary_report(self, task_metrics: Dict, dataset_type: str):
-        print("\n" + "=" * 60)
-        print(f"{self.model_name} - 评估汇总报告")
-        print("=" * 60)
+        logger.debug("\n" + "=" * 60)
+        logger.debug(f"{self.model_name} - 评估汇总报告")
+        logger.debug("=" * 60)
 
         for task_name, metrics in task_metrics.items():
             task_type = metrics['type']
             if task_type == 'regression':
-                print(f"{task_name}: MAE = {metrics[f'{dataset_type}_metric']:.4f}")
+                logger.debug(f"{task_name}: MAE = {metrics[f'{dataset_type}_metric']:.4f}")
             else:
-                print(
+                logger.debug(
                     f"{task_name}: Accuracy={metrics[f'{dataset_type}_metric']:.4f}")
 
     def _evaluate_multi_task_model(self, model, window, dataset, dataset_type) -> Dict:
@@ -65,13 +67,12 @@ class ModelEvaluation:
 
         # 绘制预测效果
         if hasattr(window, 'window_plot'):
-            window.window_plot(model=model, dataset=dataset)  # 使用已训练好的模型，拿训练集的example直接预测看结果
-            plt.show()
+            window.enhanced_window_plot(model=model,model_name = self.model_name, dataset=dataset,save_path ='~/Python/NeuralNetwork/temperature_forecasting/data/pics/' )  # 使用已训练好的模型，拿训练集的example直接预测看结果
 
-        print(f"模型指标：{model.metrics_names}")
+        logger.debug(f"模型指标：{model.metrics_names}")
 
         # 评估模型
-        data_performance = model.evaluate_model(dataset)  # 所有损失和指标的'数值'列表
+        data_performance = model.evaluate(dataset,verbose=0)  # 所有损失和指标的'数值'列表
 
         # 解析评估结果
         data_metrics = dict(zip(model.metrics_names, data_performance))  # 键，上面的数值
@@ -83,8 +84,8 @@ class ModelEvaluation:
         #     'output_weather_type_accuracy': 0.85 # 天气类型准确率
         # }
 
-        print(f"\n=== {self.model_name} 模型评估结果 ===")
-        print(f"{dataset_type}:", data_metrics)
+        logger.debug(f"\n=== {self.model_name} 模型评估结果 ===")
+        logger.debug(f"{dataset_type}:", data_metrics)
 
         # 为每个任务单独计算指标
         task_metrics = {}
@@ -92,7 +93,7 @@ class ModelEvaluation:
             task_type = config['type']
             output_layer_name = f'output_{task_name}'
 
-            print(f"\n--- 任务: {task_name} ({task_type}) ---")
+            logger.debug(f"\n--- 任务: {task_name} ({task_type}) ---")
 
             data_loss = data_metrics.get(f'{output_layer_name}_loss', 0)
 
@@ -103,7 +104,7 @@ class ModelEvaluation:
                 data_metric = data_metrics.get(f'{output_layer_name}_accuracy', 0)
                 metric_name = 'Accuracy'
 
-            print(f"{task_name} - {dataset_type}-{metric_name}: {data_metric:.4f}")
+            logger.debug(f"{task_name} - {dataset_type}-{metric_name}: {data_metric:.4f}")
 
             # 存储任务指标
             task_metrics[task_name] = {
@@ -123,15 +124,15 @@ class ModelEvaluation:
         inputs, true_labels = next(iter(dataset))
         predictions = model.predict(inputs, verbose=0)
 
-        print(f"\n==={self.model_name} - {dataset_type}详细分析 ===")
+        logger.debug(f"\n==={self.model_name} - {dataset_type}详细分析 ===")
         task_results = {}
 
         # 多输出模型：predictions是元组
         if isinstance(predictions, (tuple, list)):
-            print(f"\n=== {self.model_name} - {dataset_type}详细分析 ===")
-            print(f"inputs形状: {inputs.shape}")
-            print(f"true_labels形状: {true_labels.shape}")
-            print(f"predictions类型: {type(predictions)}")
+            logger.debug(f"\n=== {self.model_name} - {dataset_type}详细分析 ===")
+            logger.debug(f"inputs形状: {inputs.shape}")
+            logger.debug(f"true_labels形状: {true_labels.shape}")
+            logger.debug(f"predictions类型: {type(predictions)}")
 
             for i, (task_name, config) in enumerate(self.output_configs.items()):
                 if i < len(predictions):
@@ -147,7 +148,7 @@ class ModelEvaluation:
                              task_name: str) -> Dict:
 
         task_type = config['type']
-        print(f"\n--- 任务: {task_name} ({task_type}) ---")
+        logger.debug(f"\n--- 任务: {task_name} ({task_type}) ---")
 
         if task_type == 'regression':
             return self._analyze_regression_task(predictions, true_values, task_name)
@@ -160,7 +161,7 @@ class ModelEvaluation:
             # 多分类分析
             return self._analyze_multiclass_task(predictions, true_values, task_name)
         else:
-            print(f"未知任务类型: {task_type}")
+            logger.debug(f"未知任务类型: {task_type}")
             return {}
 
     def _analyze_regression_task(self, predictions: np.ndarray,
@@ -237,15 +238,15 @@ class ModelEvaluation:
         true_classes = true_values.squeeze().astype(int)  # (batch, 1, 1) 移除数组中维度为1的轴。
         accuracy = np.mean(pred_classes == true_classes)  # 变成同样的1维数组比较
 
-        print(f"-----{task_name}-----")
-        print(f"Accuracy: {accuracy:.4f}")
-        print("分类报告:")
-        print(classification_report(true_classes, pred_classes, zero_division=0))
+        logger.debug(f"-----{task_name}-----")
+        logger.debug(f"Accuracy: {accuracy:.4f}")
+        logger.debug("分类报告:")
+        logger.debug(classification_report(true_classes, pred_classes, zero_division=0))
 
         # 混淆矩阵
         cm = confusion_matrix(true_classes, pred_classes)
-        print("混淆矩阵:")
-        print(cm)
+        logger.debug("混淆矩阵:")
+        logger.debug(cm)
 
         return {
             'accuracy': accuracy,

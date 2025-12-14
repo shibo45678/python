@@ -1,3 +1,5 @@
-from .cnn import CnnModel
-from .lstm import LstmModel
+
+from .lstm import SingleTaskLstmModel,MultiTasksLstmModel
 from .NeuralNetwork import TimeSeriesEstimator
+
+from .cnn import MultiTasksCnnModel

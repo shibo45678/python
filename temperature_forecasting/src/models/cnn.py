@@ -249,14 +249,14 @@ class CnnModel:
             logger.debug("模型尚未构建")
 
 
-class EnhancedCnnModel(CnnModel):
+class MultiTasksCnnModel(CnnModel):
     class MultiModalConfig(CnnModel.ParallelConfig):
         input_width: int = Field(default=6, description="输入时间步步长")
         output_width: int = Field(default=5, description="输出时间步步长")
         numeric_columns: List[str] = Field(default=[], description="数值列名称")
         categorical_columns: List[str] = Field(default=[], description="分类列名称")
-        embedding_configs: Dict[str, Dict] = Field(default={},
-                                                   description="分类列信息 {input_dim,input_length,output_dim,embeddings_regularizer}}")
+        embedding_configs: Optional[Dict[str, Dict]] = Field(default={},
+                                                             description="分类列信息 {input_dim,input_length,output_dim,embeddings_regularizer}}")
         output_config: Dict[str, Dict] = Field(...,
                                                description="输出配置 {输出列: {type: regression/classification,binary_classification ...}}")
         learning_rate: float = Field(default=0.001)
@@ -309,7 +309,7 @@ class EnhancedCnnModel(CnnModel):
         参数:
         ----------
         architecture_type: str
-        模型架构类型: 'sequential', 'parallel', 'enhance_parallel'(增加分类特征的embedding）
+        模型架构类型: 'sequential', 'parallel', 'enhance_parallel'(增加可兼容分类特征embedding层的模型）
         """
         kwargs['config'] = config  # 重要：传递 config 给父类
         kwargs['architecture_type'] = architecture_type
@@ -318,9 +318,9 @@ class EnhancedCnnModel(CnnModel):
 
         self.model_config = self._validate_config(config, self.MultiModalConfig)
 
-        self.model = self._build_multi_modal_cnn_model()
+        self.model = self._build_cnn_model()
 
-    def _build_multi_modal_cnn_model(self) -> tf.keras.Model:
+    def _build_cnn_model(self) -> tf.keras.Model:
 
         input_width = self.model_config.input_width
         output_width = self.model_config.output_width
@@ -340,34 +340,39 @@ class EnhancedCnnModel(CnnModel):
             shape=(input_width, len(num_cols)),
             name='numeric_input'
         )
+        # 有无分类嵌入的判断
+        if cat_cols:
+            categorical_inputs = []
+            for col_name in cat_cols:
+                cat_input = tf.keras.layers.Input(
+                    shape=(input_width,),  # (6, ) 表示6个时间步，1个特征
+                    name=f"categorical_{col_name}_input"
+                )
+                categorical_inputs.append(cat_input)
 
-        categorical_inputs = []
-        for col_name in cat_cols:
-            cat_input = tf.keras.layers.Input(
-                shape=(input_width,),  # (6, ) 表示6个时间步，1个特征
-                name=f"categorical_{col_name}_input"
-            )
-            categorical_inputs.append(cat_input)
+            # Embedding层处理分类特征
+            embedded_layers = []
+            for i, col_name in enumerate(cat_cols):
+                embedding = tf.keras.layers.Embedding(**embedding_configs[col_name])(categorical_inputs[i])
+                embedded_layers.append(embedding)
 
-        # Embedding层处理分类特征
-        embedded_layers = []
-        for i, col_name in enumerate(cat_cols):
-            embedding = tf.keras.layers.Embedding(**embedding_configs[col_name])(categorical_inputs[i])
-            embedded_layers.append(embedding)
-
-        # 合并所有特征
-        if embedded_layers:
-            if len(embedded_layers) > 1:
-                all_embedded = tf.keras.layers.Concatenate(axis=-1)(embedded_layers)
+            # 合并所有特征
+            if embedded_layers:
+                if len(embedded_layers) > 1:
+                    all_embedded = tf.keras.layers.Concatenate(axis=-1)(embedded_layers)
+                else:
+                    all_embedded = embedded_layers[0]
+                combined = tf.keras.layers.Concatenate(axis=-1)([numeric_input, all_embedded])
             else:
-                all_embedded = embedded_layers[0]
-            combined = tf.keras.layers.Concatenate(axis=-1)([numeric_input, all_embedded])
+                combined = numeric_input
+
+            x = combined
+
         else:
-            combined = numeric_input
+            x = numeric_input
+            categorical_inputs = []
 
-        x = combined
-
-        # 多分支特征提取
+            # 多分支特征提取
         for layer_index, (f_ls, k_ls, d_ls) in enumerate(zip(branch_filters, branch_kernels, branch_dilation_rate)):
             logger.debug(f"已添加第{layer_index}层")
 
@@ -472,7 +477,7 @@ class EnhancedCnnModel(CnnModel):
 
             outputs.append(output_layer)
 
-        all_inputs = [numeric_input] + categorical_inputs
+        all_inputs = [numeric_input] + categorical_inputs  # 无分类数据时：[] ,有分类时：字典
         model = tf.keras.Model(inputs=all_inputs, outputs=outputs)
 
         # 不同的编译器

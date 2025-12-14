@@ -1,1 +1,1 @@
-from .training_models import TrainingModel
+from .training_models import TrainingMultiModel,TrainingSingleModel
