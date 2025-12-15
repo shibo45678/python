@@ -144,22 +144,22 @@ def main():
     features_temp_train, _ = preprocessor.train(features=df_train, labels=None)
 
     # 立即检查状态
-    print("=== 训练后立即检查 ===")
+    logger.debug("=== 训练后立即检查 ===")
     for name, pipeline in preprocessor.pipelines_.items():
-        print(f"{name}:")
+        logger.debug(f"{name}:")
         try:
             check_is_fitted(pipeline)
-            print("  ✓ Pipeline 整体已拟合")
+            logger.debug("  ✓ Pipeline 整体已拟合")
         except Exception as e:
-            print(f"  ✗ Pipeline 整体未拟合: {e}")
+            logger.debug(f"  ✗ Pipeline 整体未拟合: {e}")
 
         # 检查每个步骤
         for step_name, transformer in pipeline.steps:
             try:
                 check_is_fitted(transformer)
-                print(f"    ✓ {step_name} 已拟合")
+                logger.debug(f"    ✓ {step_name} 已拟合")
             except Exception as e:
-                print(f"    ✗ {step_name} 未拟合: {e}")
+                logger.debug(f"    ✗ {step_name} 未拟合: {e}")
 
     features_temp_val, _ = preprocessor.transform_predict(features=df_val, labels=None)
     features_temp_test, _ = preprocessor.transform_predict(features=df_test, labels=None)
@@ -179,6 +179,7 @@ def main():
     #                                 'T': {'type': 'regression',
     #                                       'loss': 'mse',
     #                                       'metrics': ['mae'],
+    #                                       'loss_weights': 1,
     #                                       'units': 1,
     #                                       }},
     #                             'multi_tasks':False}
@@ -203,14 +204,16 @@ def main():
                                    'T': {'type': 'regression',  # 单变量回归
                                          'loss': 'mse',  # 主损失函数
                                          'metrics': ['mae'],  # 额外指标：平均绝对误差
+                                         'loss_weights': 0.95,
                                          'units': 1,  # 每个时间步预测n个特征
                                          },
 
-                                   'p': {'type': 'regression',
-                                         'loss': 'mse',
-                                         'metrics': ['mae'],
-                                         'units': 1,
-                                         }
+                                   'rh': {'type': 'regression',
+                                          'loss': 'mse',
+                                          'metrics': ['mae'],
+                                          'loss_weights': 0.22,
+                                          'units': 1,
+                                          }
                                },
                                'multi_tasks': True,
                                }
@@ -220,7 +223,7 @@ def main():
         'learning_rate': 0.00035,
         'units': [192],  # len控制lstm的层数
         'return_sequences': [False],
-        'epochs': 30,
+        'epochs': 3,
         'verbose': 2
     }}
 
@@ -234,7 +237,7 @@ def main():
 
         # 训练
         model.fit(X_copy, y=None)
-        model.save(f'./saved_{name}/timeseries_v1')
+        model.save(f'./saved_{name}/tf_format/')
 
         # 重构、预测
         predictions = model.predict(features_temp_val_copy)  # # N天后加载使用load
@@ -242,7 +245,7 @@ def main():
 
         # 逆转换
         inverse_1 = preprocessor.pipelines_.get('pipeline_4').named_steps['engineer_3'].inverse_transform(
-            scaled_data=predictions, target_columns=['T', 'p'])
+            scaled_data=predictions, target_columns=['T', 'rh'])
 
         inverse_2 = preprocessor.pipelines_.get('pipeline_4').named_steps['engineer_4'].inverse_transform(inverse_1)
 

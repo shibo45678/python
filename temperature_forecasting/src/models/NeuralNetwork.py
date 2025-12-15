@@ -7,9 +7,9 @@ from pydantic import Field
 from sklearn.utils.validation import check_is_fitted
 from data.decorator import validate_input
 from models.cnn import MultiTasksCnnModel
-from models.lstm import SingleTaskLstmModel,MultiTasksLstmModel
-from training.training_models import TrainingMultiModel,TrainingSingleModel
-from data.windows import WindowGenerator, EnhancedWindowGenerator
+from models.lstm import SingleTaskLstmModel, MultiTasksLstmModel
+from training.training_models import TrainingMultiModel, TrainingSingleModel
+from data.windows import EnhancedWindowGenerator
 from evaluation.model_evaluation import ModelEvaluation
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 import tensorflow as tf
@@ -47,7 +47,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.weights_dir = f"weights/{self.model_config['model_type']}_{timestamp}"
+        self.weights_dir = f"saved_model/{self.model_config['model_type']}_{timestamp}"
 
     def fit(self, X: dict, y=None):
         # 写出数据源
@@ -92,13 +92,14 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             # 1.4 训练模型
             # 确保目录存在(立即创建)
             os.makedirs(self.weights_dir, exist_ok=True)
+
             self.history_, best_checkpoint = TrainingMultiModel(model_name=self.model_config['model_type'],
-                                                           model=self.training_model_,
-                                                           trainset=train_window_data,
-                                                           valset=val_window_data,
-                                                           verbose=self.model_config['verbose'],
-                                                           epochs=self.model_config['epochs'],
-                                                           weights_dir=self.weights_dir)
+                                                                model=self.training_model_,
+                                                                trainset=train_window_data,
+                                                                valset=val_window_data,
+                                                                verbose=self.model_config['verbose'],
+                                                                epochs=self.model_config['epochs'],
+                                                                weights_dir=self.weights_dir)
         # 单任务
         else:
             if self.model_config['model_type'].startswith('single_lstm'):
@@ -110,14 +111,12 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
             os.makedirs(self.weights_dir, exist_ok=True)
             self.history_, best_checkpoint = TrainingSingleModel(model_name=self.model_config['model_type'],
-                                                                model=self.training_model_,
-                                                                trainset=train_window_data,
-                                                                valset=val_window_data,
-                                                                verbose=self.model_config['verbose'],
-                                                                epochs=self.model_config['epochs'],
-                                                                weights_dir=self.weights_dir)
-
-
+                                                                 model=self.training_model_,
+                                                                 trainset=train_window_data,
+                                                                 valset=val_window_data,
+                                                                 verbose=self.model_config['verbose'],
+                                                                 epochs=self.model_config['epochs'],
+                                                                 weights_dir=self.weights_dir)
 
         # 保存最佳检查点路径供后续使用
         self.best_checkpoint = best_checkpoint
@@ -195,36 +194,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                 f"目录内容: {os.listdir(checkpoint_dir)}"
             )
         model = tf.keras.models.load_model(keras_file)
-        #     # 如果找不到.keras文件，尝试找其他格式
-        #     possible_files = [
-        #         os.path.join(checkpoint_dir, 'model.keras'),
-        #         os.path.join(checkpoint_dir, 'weights.h5'),
-        #         os.path.join(checkpoint_dir, 'model.weights.h5'),
-        #         os.path.join(checkpoint_dir, 'model.h5')
-        #     ]
-        #
-        #     found_file = None
-        #     for filepath in possible_files:
-        #         if os.path.exists(filepath):
-        #             found_file = filepath
-        #             break
-        #
-        #     if not found_file:
-        #         raise FileNotFoundError(f"在目录 {checkpoint_dir} 中找不到模型文件")
-        #
-        #     model_file = found_file
-        #
-        # # 根据文件类型加载模型
-        # if model_file.endswith('.keras'):
-        #     # .keras文件包含完整的模型，可以不用克隆，适合大模型
-        #     reconstructed_model = tf.keras.models.load_model(model_file)
-        # else:
-        #     # .h5文件只包含权重，需要重建架构
-        #     # 如果clone_model没有自动构建，则手动构建
-        #     reconstructed_model = tf.keras.models.clone_model(self.training_model_)
-        #     if not reconstructed_model.built:
-        #         reconstructed_model.build(self.training_model_.input_shape) # input_shape自动去掉了batch [(None, 6, 27), (None, 6)] 数值ndim3+分类ndim2
-        #     reconstructed_model.load_weights(model_file) # load_weights 需要具体文件
 
         # 重新编译（用于预测）
         self._compile_for_prediction_model(model)
@@ -249,6 +218,32 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         return pd.date_range(start=last_time + self.model_config['shift'], periods=n_steps, freq=6 * freq)
 
     def _compile_for_prediction_model(self, model):  # 同一Python进程中直接获取实例。独立的演化路径
+        """为预测模型重新编译 多输出会折叠metrics会折叠"""
+
+        # 获取实际输出数量
+        num_outputs = len(model.outputs)
+        logger.debug(f"模型有 {num_outputs} 个输出")
+
+        # 获取输出层名称（使用模型输出层名称，不是张量名称）
+        output_names = []
+        for output in model.outputs:
+            for layer in model.layers:
+                if hasattr(layer, 'output') and layer.output is output:
+                    output_names.append(layer.name)
+                    break
+        logger.debug(f"输出层名称：{output_names}")
+
+        # 构建字典配置
+        # 使用统一的配置管理器
+        loss_config = ModelConfigManager.get_loss_config(self.model_config)
+        metrics_config = ModelConfigManager.get_metrics_config(self.model_config)
+        loss_weights_config = ModelConfigManager.get_loss_weights_config(self.model_config)
+
+        logger.debug(f"loss_config: {loss_config}")
+        logger.debug(f"metrics_config: {metrics_config}")
+        logger.debug(f"loss_weights_config:{loss_weights_config}")
+
+        # 获取优化器
         if hasattr(self, 'training_model_') and hasattr(self.training_model_, 'optimizer'):
             optimizer = self.training_model_.optimizer  # 可以用实例，load可以用配置
         else:
@@ -256,163 +251,163 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
 
         # 单输出或者多输出都可以使用字典，但是要保证输出层名字正确
-        loss_config = self._get_loss_config()
-        metrics_config = self._get_metrics_config()
+        logger.debug("=== 编译前检查 ===")
+        logger.debug(f"输出层: {output_names}")
+        logger.debug(f"loss_config: {loss_config}")
+        logger.debug(f"metrics_config: {metrics_config}")
+        logger.debug(f"loss_config类型: {type(loss_config)}")
+        logger.debug(f"metrics_config类型: {type(metrics_config)}")
 
         model.compile(
             optimizer=optimizer,
             loss=loss_config,  # 字典 键是输出层名
+            loss_weights=loss_weights_config,
             metrics=metrics_config
         )
 
-    def _get_compile_config_for_save(self):  # 磁盘恢复传递字典get_config()
+        logger.debug("编译完成，验证metrics配置...")
+
+        if len(model.metrics) >= 2:
+            compile_metrics = model.metrics[1]
+            if hasattr(compile_metrics, '_user_metrics'):
+                actual_metrics = compile_metrics._user_metrics
+                logger.debug(f"实际编译的metrics配置: {actual_metrics}")
+                logger.debug(f"期望的metrics配置: {metrics_config}")
+
+        return model
+
+    def _get_compile_config_for_save(self):
+
+        # 1. 获取优化器实例
         if hasattr(self, 'training_model_') and self.training_model_.optimizer:
-            optimizer_config = self.training_model_.optimizer.get_config()  # 使用 get_config() 获取可序列化的配置
+            optimizer_config = self.training_model_.optimizer.get_config()
+            # 磁盘恢复传递字典get_config() 获取可序列化的配置 配置字典（但加载的时候需要实例）
+            # 'optimizer': {'class_name': 'Adam', 'config': {...}},
         else:
             # 回退逻辑
             learning_rate = self.model_config.get('learning_rate', 0.001)
             default_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
             optimizer_config = default_optimizer.get_config()
 
+        # 2. 获取输出层名称
+        loss_config = ModelConfigManager.get_loss_config(self.model_config)
+        metrics_config = ModelConfigManager.get_metrics_config(self.model_config)
+        loss_weights_config = ModelConfigManager.get_loss_weights_config(self.model_config)
+
+        # 3. 构建字典格式的loss和metrics配置
         return {
             'optimizer': optimizer_config,
-            'loss': self._get_loss_config(),
-            'metrics': self._get_metrics_config()
+            'loss': loss_config,
+            'metrics': metrics_config,
+            'loss_weights': loss_weights_config,
+            'output_names': list(self.model_config.get('output_config', {}).keys())  # 额外保存输出层名称，方便对齐
         }
-
-    def _get_loss_config(self):
-        if not hasattr(self, 'output_config') or not self.model_config['output_config']:
-            loss = 'mse'  # 重构在训练之后，训练已经检查output_config 不为空
-        else:
-            loss = {}
-            for output_name, config in self.model_config['output_config'].items():
-                loss[output_name] = config.get('loss', self._get_default_loss(config['type']))
-
-        return loss
-
-    def _get_metrics_config(self):
-        """统一的metrics配置"""
-        if not hasattr(self, 'output_config') or not self.model_config['output_config']:
-            metrics = ['mae']  # 重构在训练之后，训练已经检查output_config 不为空
-            return metrics
-
-        metrics = {}
-        for output_name, config in self.model_config['output_config'].items():
-            metrics[output_name] = config.get('metrics', self._get_default_metrics(config['type']))
-
-        return metrics
-
-    def _get_default_loss(self, type):
-        return {'regression': 'mse',
-                'classification': 'sparse_categorical_crossentropy',
-                'binary_classification': 'binary_crossentropy'}[type]
-
-    def _get_default_metrics(self, type):
-        return {
-            'regression': ['mae', 'mse'],
-            'classification': ['accuracy'],
-            'binary_classification': ['accuracy']
-        }[type]
 
     def clear_prediction_cache(self):
         """清空预测缓存"""
         if hasattr(self, '_prediction_model'):
             del self._prediction_model
 
-    def save(self, save_path):
-        """保存整个模型（包括配置、窗口、权重、编译配置）"""
-        check_is_fitted(self)
+    # def save(self, save_path):
+    #     """保存整个模型（包括配置、窗口、权重、编译配置）"""
+    #     check_is_fitted(self)
+    #     os.makedirs(save_path, exist_ok=True)
+    #
+    #     # 1. 保存模型权重 （TF格式，支持大文件）
+    #     if not hasattr(self, '_prediction_model'):
+    #         self._prediction_model = self.reconstruct_model()
+    #
+    #     # 使用TF格式保存权重（自动分片）
+    #     weights_dir = os.path.join(save_path, 'model_weights')  # 文件夹放很很多文件
+    #     self._prediction_model.save_weights(weights_dir)
+    #
+    #     # 2. 保存架构为Json
+    #     model_json = self._prediction_model.to_json()
+    #     with open(os.path.join(save_path, 'model_architecture.json'), 'w') as f:
+    #         f.write(model_json)
+    #
+    #     # 3. 保存配置信息
+    #     save_configs = {
+    #         'model_config': self.model_config,
+    #         'window_config': {
+    #             'input_width': self.window.input_width,
+    #             'label_width': self.window.label_width,
+    #             'shift': self.window.shift,
+    #             'label_columns': self.window.label_columns,
+    #             'numeric_columns': self.window.numeric_columns,
+    #             'categorical_columns': self.window.categorical_columns,
+    #             'embedding_configs': self.window.embedding_configs,
+    #             'output_configs': self.window.output_configs
+    #         },
+    #         'compile_config': self._get_compile_config_for_save(),  # 确保字典格式
+    #         'tensorflow_version': tf.__version__
+    #     }
+    #
+    #     joblib.dump(save_configs, os.path.join(save_path, 'saved_configs.pkl'))
+    #     logger.debug(f"完整模型已保存到: {save_path}")
+    #     return save_path
 
-        os.makedirs(save_path, exist_ok=True)
-
-        # 1. 保存模型权重 （TF格式，支持大文件）
-        if not hasattr(self, '_prediction_model'):
-            self._prediction_model = self.reconstruct_model()
-
-        # 使用TF格式保存权重（自动分片）
-        weights_dir = os.path.join(save_path, 'model_weights')  # 文件夹放很很多文件
-        self._prediction_model.save_weights(weights_dir, save_format='tf')
-
-        # 2. 保存架构为Json
-        model_json = self._prediction_model.to_json()
-        with open(os.path.join(save_path, 'model_architecture.json'), 'w') as f:
-            f.write(model_json)
-
-        # 3. 保存配置信息
-        save_configs = {
-            'model_config': self.model_config,
-            'window_config': {
-                'input_width': self.window.input_width,
-                'label_width': self.window.label_width,
-                'shift': self.window.shift,
-                'label_columns': self.window.label_columns,
-                'numeric_columns': self.window.numeric_columns,
-                'categorical_columns': self.window.categorical_columns,
-                'embedding_configs': self.window.embedding_configs,
-                'output_configs': self.window.output_configs
-            },
-            'compile_config': self._get_compile_config_for_save(),
-        }
-
-        joblib.dump(save_configs, os.path.join(save_path, 'saved_configs.pkl'))
-        print(f"完整模型已保存到: {save_path}")
-        return save_path
-
-    @classmethod
-    def load(cls, save_path):
-        """加载分片保存的模型"""
-
-        # 1. 加载配置
-        config_path = os.path.join(save_path, 'saved_configs.pkl')
-        if not os.path.exists(config_path):
-            raise FileNotFoundError(f"配置文件不存在: {config_path}")
-
-        config_data = joblib.load(config_path)
-
-        # 2. 创建estimator实例
-        estimator = cls(model_config=config_data['model_config'])
-
-        # 3. 重建窗口生成器
-        estimator.window = WindowGenerator(**config_data['window_config'])
-
-        # 4. 从JSON重建模型结构
-        model_json_path = os.path.join(save_path, 'model_architecture.json')
-        if not os.path.exists(model_json_path):
-            raise FileNotFoundError(f"模型架构文件不存在: {model_json_path}")
-
-        with open(model_json_path, 'r') as f:
-            model_json = f.read()
-
-        # 处理自定义层(这里没有)
-        custom_objects = getattr(cls, 'custom_objects', {})
-        estimator.prediction_model_ = tf.keras.models.model_from_json(model_json, custom_objects=custom_objects)
-
-        # 5. 加载分片权重
-        weights_dir = os.path.join(save_path, 'model_weights')
-        if not os.path.exists(weights_dir):
-            raise FileNotFoundError(f"权重文件不存在: {weights_dir}")
-        # 自动加载所有分片
-        estimator.prediction_model_.load_weights(weights_dir)
-
-        # 6. 重新编译模型 （调用 model.evaluate()，需要编译信息/保持与训练时行为一致）
-        if 'compile_config' in config_data:
-            estimator.prediction_model_.complie(**config_data['compile_config'])
-        else:
-            # 如果没有保存编译配置，使用默认编译
-            estimator.prediction_model_.compile(
-                optimizer='adam',
-                loss='mse',
-                metrics=['mae']
-            )
-
-        # 7. 标记为已拟合
-        estimator.is_fitted_ = True
-
-        # training_model_可以为None，因为不需要重新训练
-        estimator.training_model_ = None
-
-        print(f"模型已从 {save_path} 加载")
-        return estimator
+    # @classmethod
+    # def load(cls, save_path):
+    #     """加载分片保存的模型"""
+    #
+    #     # 1. 加载配置
+    #     config_path = os.path.join(save_path, 'saved_configs.pkl')
+    #     if not os.path.exists(config_path):
+    #         raise FileNotFoundError(f"配置文件不存在: {config_path}")
+    #
+    #     saved_configs = joblib.load(config_path)
+    #
+    #     # 2. 创建estimator实例
+    #     estimator = cls(model_config=saved_configs['model_config'])
+    #
+    #     # 3. 重建窗口生成器
+    #     estimator.window = EnhancedWindowGenerator(**saved_configs['window_config'])
+    #
+    #     # 4. 从JSON重建模型结构
+    #     model_json_path = os.path.join(save_path, 'model_architecture.json')
+    #     if not os.path.exists(model_json_path):
+    #         raise FileNotFoundError(f"模型架构文件不存在: {model_json_path}")
+    #
+    #     with open(model_json_path, 'r') as f:
+    #         model_json = f.read()
+    #
+    #     # 处理自定义层(这里没有)
+    #     custom_objects = getattr(cls, 'custom_objects', {})
+    #     estimator.prediction_model_ = tf.keras.models.model_from_json(model_json, custom_objects=custom_objects)
+    #
+    #     # 5. 加载分片权重
+    #     weights_dir = os.path.join(save_path, 'model_weights')
+    #     if not os.path.exists(weights_dir):
+    #         raise FileNotFoundError(f"权重文件不存在: {weights_dir}")
+    #     # 自动加载所有分片
+    #     estimator.prediction_model_.load_weights(weights_dir).expect_partial()  # 宽松模式，允许部分权重不匹配
+    #
+    #     # 6. 1 重建优化器实例（saved_configs['compile_config']里面保存的是字典，不是实例）'optimizer': {'class_name': 'Adam', 'config': {...}},
+    #     compile_config = saved_configs['compile_config']
+    #     optimizer_config = compile_config['optimizer']
+    #     optimizer_class = getattr(tf.keras.optimizers, optimizer_config['class_name'])
+    #     optimizer = optimizer_class.from_config(optimizer_config['config'])
+    #     # 6. 2 提取其他配置
+    #     loss_config = compile_config['loss']
+    #     metrics_config = compile_config['metrics']
+    #     loss_weights_config = compile_config['loss_weights']
+    #
+    #     estimator.prediction_model_.compile(
+    #         optimizer=optimizer,  # 优化器实例
+    #         loss=loss_config,  # 字典
+    #         metrics=metrics_config,  # 字典
+    #         loss_weights=loss_weights_config
+    #     )
+    #
+    #     # 7. 标记为已拟合
+    #     estimator.is_fitted_ = True
+    #
+    #     # training_model_可以为None，因为不需要重新训练
+    #     estimator.training_model_ = None
+    #
+    #     logger.debug(f"模型已从 {save_path} 加载")
+    #     return estimator
 
     def __getstate__(self):
         """序列化时只保留必要信息"""
@@ -566,3 +561,63 @@ class EmbeddingConfig:
                 embedding_configs[col] = base_config
 
             return embedding_configs
+
+
+class ModelConfigManager:
+    """统一管理模型配置的辅助类"""
+
+    @staticmethod
+    def get_loss_config(model_config):
+        # 单和多输出，都是字典
+        output_config = model_config.get('output_config', {})
+
+        output_names = list(output_config.keys())
+        loss_config = {}
+        for output_name in output_names:
+            cfg = output_config.get(output_name, {})
+            loss_type = cfg.get('type', 'regression')
+            loss_config[output_name] = cfg.get('loss', ModelConfigManager._get_default_loss(loss_type))
+        return loss_config
+
+    @staticmethod
+    def get_metrics_config(model_config):
+        output_config = model_config.get('output_config', {})
+
+        output_names = list(output_config.keys())
+        metrics_config = {}
+        for output_name in output_names:
+            cfg = output_config.get(output_name, {})
+            loss_type = cfg.get('type', 'regression')
+            metrics = cfg.get('metrics', ModelConfigManager._get_default_metrics(loss_type))
+            metrics_config[output_name] = metrics if isinstance(metrics, list) else [metrics]
+
+        return metrics_config
+
+    @staticmethod
+    def get_loss_weights_config(model_config):
+        output_config = model_config.get('output_config', {})
+
+        output_names = list(output_config.keys())
+        loss_weights = {}
+        for output_name in output_names:
+            cfg = output_config.get(output_name, {})
+            loss_weights[output_name] = cfg.get('loss_weights', 1.0)
+        return loss_weights
+
+    @staticmethod
+    def _get_default_loss(loss_type):
+        defaults = {
+            'regression': 'mse',
+            'classification': 'sparse_categorical_crossentropy',
+            'binary_classification': 'binary_crossentropy'
+        }
+        return defaults.get(loss_type, 'mse')
+
+    @staticmethod
+    def _get_default_metrics(loss_type):
+        defaults = {
+            'regression': ['mae'],
+            'classification': ['accuracy'],
+            'binary_classification': ['accuracy']
+        }
+        return defaults.get(loss_type, ['mae'])

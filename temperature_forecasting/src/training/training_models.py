@@ -119,7 +119,7 @@ def TrainingSingleModel(model_name: str,
                     self.model.export(export_path)
 
                 best_model_path = checkpoint_dir  # 直接赋值给外层变量
-                logger.debug(f"\nEpoch {epoch + 1}: 保存最佳TF分片模型到 {checkpoint_dir}, val_loss={val_loss:.4f}")
+                logger.debug(f"\nEpoch {epoch + 1}: 保存最佳模型到 {checkpoint_dir}, val_loss={val_loss:.4f}")
 
     # 创建TensorBoard日志目录
     log_dir = os.path.join(weights_dir, "logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -187,7 +187,6 @@ def TrainingSingleModel(model_name: str,
 
 
 
-
 def TrainingMultiModel(model_name: str,
                   model,  # tf.keras.models
                   trainset,  # x,y
@@ -235,8 +234,6 @@ def TrainingMultiModel(model_name: str,
                 checkpoint_dir = os.path.join(self.checkpoint_dir, current_epoch_dir) # 用目录格式并确保路径以斜杠结尾
                 os.makedirs(checkpoint_dir, exist_ok=True)  # 必须创建目录
 
-                # 保存为TF分片格式- 使用model.export()而不是ModelCheckpoint
-
                 @contextlib.contextmanager
                 def suppress_output():
                     old_stdout = sys.stdout  # 备份原来的"屏幕输出通道"
@@ -263,7 +260,7 @@ def TrainingMultiModel(model_name: str,
                     self.model.export(export_path)
 
                 best_model_path = checkpoint_dir  # 直接赋值给外层变量
-                logger.debug(f"\nEpoch {epoch + 1}: 保存最佳TF分片模型到 {checkpoint_dir}, val_loss={val_loss:.4f}")
+                logger.debug(f"\nEpoch {epoch + 1}: 保存最佳模型到 {checkpoint_dir}, val_loss={val_loss:.4f}")
 
     # 创建TensorBoard日志目录
     log_dir = os.path.join(weights_dir, "logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -276,7 +273,7 @@ def TrainingMultiModel(model_name: str,
         callbacks=[
             # 早停：防止过拟合
             tf.keras.callbacks.EarlyStopping(monitor='val_loss',  # 整体验证损失
-                                             patience=8,  # 没有进步的训练轮数，在这之后训练停止
+                                             patience=10,  # 没有进步的训练轮数，在这之后训练停止
                                              mode='min',  # 当监测指标停止减少时训练停止（维持最小值）
                                              min_delta=0.001,  # 设置最小改善阈值
                                              restore_best_weights=True),
@@ -325,6 +322,7 @@ def TrainingMultiModel(model_name: str,
 
     save_dir = os.path.expanduser("~/Python/NeuralNetwork/temperature_forecasting/data/pics/")
     history_plot(history=record, model_name=model_name, save_dir=save_dir)
+
 
     return record, best_model_path
 

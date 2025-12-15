@@ -8,7 +8,7 @@ import numpy as np
 from typing import Dict
 import tensorflow as tf
 from sklearn.metrics import classification_report, confusion_matrix
-from data.windows import WindowGenerator
+from data.windows import EnhancedWindowGenerator
 import logging
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class ModelEvaluation:
 
     def comprehensive_model_evaluation(self,
                                        model,  # tf.keras.Model 防误导
-                                       window: 'WindowGenerator',
+                                       window: 'EnhancedWindowGenerator',
                                        dataset: tf.data.Dataset,
                                        dataset_type: str
                                        ) -> Dict:
@@ -51,10 +51,10 @@ class ModelEvaluation:
         for task_name, metrics in task_metrics.items():
             task_type = metrics['type']
             if task_type == 'regression':
-                logger.debug(f"{task_name}: MAE = {metrics[f'{dataset_type}_metric']:.4f}")
+                logger.debug(f"{task_name}: MAE = {metrics[f'{dataset_type}_mae']:.4f}")
             else:
                 logger.debug(
-                    f"{task_name}: Accuracy={metrics[f'{dataset_type}_metric']:.4f}")
+                    f"{task_name}: Accuracy={metrics[f'{dataset_type}_accuracy']:.4f}")
 
     def _evaluate_multi_task_model(self, model, window, dataset, dataset_type) -> Dict:
         """混合分类和回归"""
@@ -67,49 +67,35 @@ class ModelEvaluation:
 
         # 绘制预测效果
         if hasattr(window, 'window_plot'):
-            window.enhanced_window_plot(model=model,model_name = self.model_name, dataset=dataset,save_path ='~/Python/NeuralNetwork/temperature_forecasting/data/pics/' )  # 使用已训练好的模型，拿训练集的example直接预测看结果
-
-        logger.debug(f"模型指标：{model.metrics_names}")
+            window.enhanced_window_plot(model=model, model_name=self.model_name, dataset=dataset,
+                                        save_path='~/Python/NeuralNetwork/temperature_forecasting/data/pics/')  # 使用已训练好的模型，拿训练集的example直接预测看结果
 
         # 评估模型
-        data_performance = model.evaluate(dataset,verbose=0)  # 所有损失和指标的'数值'列表
+        # 分别适配多任务和单任务
+        data_metrics = model.evaluate(dataset, verbose=0, return_dict=True)  # 所有损失和指标的'数值'列表 使用return_dict=True
 
-        # 解析评估结果
-        data_metrics = dict(zip(model.metrics_names, data_performance))  # 键，上面的数值
-        # {
-        #     'loss': 0.25,                    # 总损失
-        #     'output_temperature_loss': 0.15, # 温度任务损失
-        #     'output_temperature_mae': 0.12,  # 温度任务MAE
-        #     'output_weather_type_loss': 0.10,# 天气类型任务损失
-        #     'output_weather_type_accuracy': 0.85 # 天气类型准确率
-        # }
-
-        logger.debug(f"\n=== {self.model_name} 模型评估结果 ===")
-        logger.debug(f"{dataset_type}:", data_metrics)
+        logger.debug(f"=== {self.model_name} 模型评估结果 ===")
 
         # 为每个任务单独计算指标
         task_metrics = {}
         for task_name, config in self.output_configs.items():
             task_type = config['type']
-            output_layer_name = f'output_{task_name}'
 
-            logger.debug(f"\n--- 任务: {task_name} ({task_type}) ---")
-
-            data_loss = data_metrics.get(f'{output_layer_name}_loss', 0)
+            logger.debug(f"--- 任务: {task_name} ({task_type}) ---")
+            data_loss = data_metrics.get(f'{task_name}_loss', 0)
 
             if task_type == 'regression':
-                data_metric = data_metrics.get(f'{output_layer_name}_mae', 0)
-                metric_name = 'MAE'
+                data_metric = data_metrics.get(f'{task_name}_mae', 0)
+                metric_name = 'mae'
             else:  # binary_classification + 多分类
-                data_metric = data_metrics.get(f'{output_layer_name}_accuracy', 0)
-                metric_name = 'Accuracy'
-
+                data_metric = data_metrics.get(f'{task_name}_accuracy', 0)
+                metric_name = 'accuracy'
             logger.debug(f"{task_name} - {dataset_type}-{metric_name}: {data_metric:.4f}")
 
             # 存储任务指标
             task_metrics[task_name] = {
                 f'{dataset_type}_loss': data_loss,
-                f'{dataset_type}_metric': data_metric,
+                f'{dataset_type}_{metric_name}': data_metric,
                 'type': task_type
             }
 
@@ -121,23 +107,27 @@ class ModelEvaluation:
                                         dataset_type: str) -> Dict:
 
         # 获取一批数据进行详细分析
-        inputs, true_labels = next(iter(dataset))
-        predictions = model.predict(inputs, verbose=0)
+        inputs, true_labels = next(iter(dataset))  # (tuple ,dict)
+        predictions = model.predict(inputs, verbose=0)  # list
 
-        logger.debug(f"\n==={self.model_name} - {dataset_type}详细分析 ===")
+        logger.debug(f"=== {self.model_name} - {dataset_type} 详细分析 ===")
         task_results = {}
 
-        # 多输出模型：predictions是元组
+        # 多输出模型：predictions是list
         if isinstance(predictions, (tuple, list)):
-            logger.debug(f"\n=== {self.model_name} - {dataset_type}详细分析 ===")
-            logger.debug(f"inputs形状: {inputs.shape}")
-            logger.debug(f"true_labels形状: {true_labels.shape}")
+            if isinstance(inputs, tuple):
+                logger.debug(
+                    f"inputs的数值特征 (batch_size, sequence_length, total_features): {inputs[0].shape}")  # 分类特征不一定有，所以不写 (batch_size, sequence_length, total_features)
+
+            if isinstance(true_labels, dict):
+                logger.debug(f"true_labels特征数: {len(true_labels.keys())}")
+
             logger.debug(f"predictions类型: {type(predictions)}")
 
             for i, (task_name, config) in enumerate(self.output_configs.items()):
                 if i < len(predictions):
                     pred = predictions[i]  # 第i个输出层的预测
-                    true = true_labels[:, :, i]  # 从合并标签中提取对应任务
+                    true = true_labels[task_name]  # 根据key提取对应value
                     task_results[task_name] = self._analyze_single_task(pred, true, config, task_name)
 
         return task_results
@@ -148,7 +138,6 @@ class ModelEvaluation:
                              task_name: str) -> Dict:
 
         task_type = config['type']
-        logger.debug(f"\n--- 任务: {task_name} ({task_type}) ---")
 
         if task_type == 'regression':
             return self._analyze_regression_task(predictions, true_values, task_name)
@@ -169,21 +158,29 @@ class ModelEvaluation:
                                  task_name) -> Dict:
 
         # 确保数据形状正确
-        predictions = predictions.squeeze()
-        true_values = true_values.squeeze()
+        predictions = tf.squeeze(predictions)  # ->(32,5)
+        true_values = tf.squeeze(true_values)  # (32,5,1) - > (32,5) 多余的1维拿掉
 
         mae = np.mean(np.abs(predictions - true_values))
         mse = np.mean((predictions - true_values) ** 2)
         rmse = np.sqrt(mse)
 
-        print(f"-----{task_name}-----")
-        print(f"MAE: {mae:.4f}")
-        print(f"MSE: {mse:.4f}")
-        print(f"RMSE: {rmse:.4f}")
+        logger.debug(f"-----{task_name}-----")
+        logger.debug(f"MAE: {mae:.4f}")
+        logger.debug(f"MSE: {mse:.4f}")
+        logger.debug(f"RMSE: {rmse:.4f}")
 
         # 预测值统计
-        print(f"预测值范围: [{predictions.min():.3f}, {predictions.max():.3f}]")
-        print(f"真实值范围: [{true_values.min():.3f}, {true_values.max():.3f}]")
+        # 使用 TensorFlow 函数获取最小最大值
+        pred_min = tf.reduce_min(predictions).numpy()
+        pred_max = tf.reduce_max(predictions).numpy()
+        true_min = tf.reduce_min(true_values).numpy()
+        true_max = tf.reduce_max(true_values).numpy()
+
+        logger.debug(f"预测值范围: [{pred_min:.3f}, {pred_max:.3f}]")
+        logger.debug(f"真实值范围: [{true_min:.3f}, {true_max:.3f}]")
+        logger.debug(f"预测值形状: {predictions.shape}")
+        logger.debug(f"真实值形状: {true_values.shape}")
 
         return {
             'mae': mae,
@@ -198,21 +195,21 @@ class ModelEvaluation:
                                             task_name: str
                                             ) -> Dict:
         """分析二分类任务"""
-        pred_probs = predictions.squeeze()  # 概率值
-        true_binary = true_values.squeeze().astype(int)
+        pred_probs = tf.squeeze(predictions)  # 概率值
+        true_binary = tf.squeeze(true_values).astype(int)
 
         pred_binary = (pred_probs > 0.5).astype(int)
         accuracy = np.mean(pred_binary == true_binary)  # 准确率 = 正确预测的样本数 / 总样本数
 
-        print(f"-----{task_name}-----")
-        print(f"Accuracy: {accuracy:.4f}")
-        print("分类报告:")
-        print(classification_report(true_binary, pred_binary, zero_division=0))
+        logger.debug(f"-----{task_name}-----")
+        logger.debug(f"Accuracy: {accuracy:.4f}")
+        logger.debug("分类报告:")
+        logger.debug(classification_report(true_binary, pred_binary, zero_division=0))
 
         # 混淆矩阵
         cm = confusion_matrix(true_binary, pred_binary)
-        print("混淆矩阵:")
-        print(cm)
+        logger.debug("混淆矩阵:")
+        logger.debug(cm)
 
         return {
             'accuracy': accuracy,
@@ -235,7 +232,7 @@ class ModelEvaluation:
         # 样本1: max(0.1, 0.8, 0.1) = 0.8 → 索引1
         # 样本2: max(0.7, 0.2, 0.1) = 0.7 → 索引0
 
-        true_classes = true_values.squeeze().astype(int)  # (batch, 1, 1) 移除数组中维度为1的轴。
+        true_classes = tf.squeeze(true_values).astype(int)  # (batch, 1, 1) 移除数组中维度为1的轴。
         accuracy = np.mean(pred_classes == true_classes)  # 变成同样的1维数组比较
 
         logger.debug(f"-----{task_name}-----")
