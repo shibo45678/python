@@ -1,7 +1,14 @@
+import json
+import pickle
+from datetime import datetime
 import os
+from pathlib import Path
 from typing import Dict, Any
 
 import joblib
+import shutil
+
+import numpy as np
 from pydantic.v1 import validate_arguments
 from pydantic import Field
 from sklearn.utils.validation import check_is_fitted
@@ -18,6 +25,9 @@ from tensorflow.keras.regularizers import l2
 import logging
 
 logger = logging.getLogger(__name__)
+"""    一次训练直接 predict（keras格式），
+       隔日预测 TrainedModelPredictor(new_data)（keras格式） ，
+       专用部署 (格式Saved Model) """
 
 
 class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
@@ -122,7 +132,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.best_checkpoint = best_checkpoint
 
         # 训练完成后，创建用于预测的模型
-        self._prediction_model = self.reconstruct_model()
+        self._prediction_model = self.load_best_model()
 
         # 1.5 评估模型
         self.evaluate_model(dataset=val_window_data, dataset_type='val')
@@ -137,32 +147,63 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         X_ = pd.DataFrame(X) if not isinstance(X, pd.DataFrame) else X.copy()
         X_model = X_[self.input_cols_]
-        time_column_X_ = X_[self.model_config['time_column']]
 
         # 1. 处理窗口数据
         predict_window_data = self.window.createMultimodalDataset(X_model)
 
         # 2. 重构模型
         if self.prediction_model_ is None:
-            self._prediction_model = self.reconstruct_model()  # 确保使用最佳权重
+            self._prediction_model = self.load_best_model()  # 确保使用最佳权重
 
         # 3. 模型预测
         predictions = self._prediction_model.predict(predict_window_data)  # 多输入和输出（tuple,dict）->预测结果是list
 
-        # 4. 恢复未使用时间列
-        historical_timestamps = time_column_X_.copy()
+        return predictions
 
-        last_time = historical_timestamps.iloc[-1]
-        steps_ahead = self.model_config['output_width']  # 默认预测步长
+    def load_best_model(self):
+        """重构用于预测的干净模型"""
 
-        future_timestamps = self._generate_future_timestamps(last_time, self.model_config['output_width'], 'H')
+        if not hasattr(self, 'best_checkpoint'):
+            raise ValueError('未找到最佳模型检查点')
 
-        predictions_ = pd.DataFrame({
-            'timestamp': future_timestamps,
-            'prediction': predictions.flatten()[:steps_ahead]  # 确保长度匹配
-        })
+        checkpoint_dir = self.best_checkpoint
+        keras_file = os.path.join(checkpoint_dir, 'model.keras')  # 现在保存的是.keras格式，需要找到具体的.keras文件
 
-        return predictions_
+        if not os.path.exists(keras_file):
+            raise FileNotFoundError(
+                f"找不到.keras模型文件: {keras_file}\n"
+                f"目录内容: {os.listdir(checkpoint_dir)}"
+            )
+        model = tf.keras.models.load_model(keras_file)  # 可以直接 predict() evaluate() 甚至可以继续训练（如果有优化器状态）
+
+        logger.debug("\n加载的模型:")
+        logger.debug(f"  优化器: {model.optimizer}")
+        logger.debug(f"  Loss: {model.loss}")
+        logger.debug(f"  Metrics: {model.metrics}")  # 多任务的metrics 也可以打开 <CompileMetrics name=compile_metrics>]
+
+        # 重新编译 展开多任务metrics 评估<CompileMetrics name=compile_metrics>]
+        # self._compile_for_prediction_model(model)
+
+        return model
+
+    def evaluate_model(self, dataset, dataset_type='val'):
+        """用任意数据评估已训练好的模型"""
+        if not self._prediction_model:
+            model = self.load_best_model()
+        else:
+            model = self._prediction_model
+
+        metrics = ModelEvaluation(self.model_config['output_config'], model_name=self.model_config['model_type'])
+        details = metrics.comprehensive_model_evaluation(model=model,  # 评估 best_model
+                                                         window=self.window,
+                                                         dataset=dataset,
+                                                         dataset_type=dataset_type)
+        return details
+
+    def clear_prediction_cache(self):
+        """清空预测缓存"""
+        if hasattr(self, '_prediction_model'):
+            del self._prediction_model
 
     def _create_window_generator(self, embedding_info, output_config):
 
@@ -178,44 +219,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         )
 
         return window
-
-    def reconstruct_model(self):
-        """重构用于预测的干净模型"""
-
-        if not hasattr(self, 'best_checkpoint'):
-            raise ValueError('未找到最佳模型检查点')  # 现在改为分片 / 训练里面也有
-
-        checkpoint_dir = self.best_checkpoint
-        keras_file = os.path.join(checkpoint_dir, 'model.keras')  # 现在保存的是.keras格式，需要找到具体的.keras文件
-
-        if not os.path.exists(keras_file):
-            raise FileNotFoundError(
-                f"找不到.keras模型文件: {keras_file}\n"
-                f"目录内容: {os.listdir(checkpoint_dir)}"
-            )
-        model = tf.keras.models.load_model(keras_file)
-
-        # 重新编译（用于预测）
-        self._compile_for_prediction_model(model)
-
-        return model
-
-    def evaluate_model(self, dataset, dataset_type='val'):
-        """用任意数据评估已训练好的模型"""
-        if not self._prediction_model:
-            model = self.reconstruct_model()
-        else:
-            model = self._prediction_model
-
-        metrics = ModelEvaluation(self.model_config['output_config'], model_name=self.model_config['model_type'])
-        details = metrics.comprehensive_model_evaluation(model=model,  # 评估 best_model
-                                                         window=self.window,
-                                                         dataset=dataset,
-                                                         dataset_type=dataset_type)
-        return details
-
-    def _generate_future_timestamps(self, last_time, n_steps, freq):
-        return pd.date_range(start=last_time + self.model_config['shift'], periods=n_steps, freq=6 * freq)
 
     def _compile_for_prediction_model(self, model):  # 同一Python进程中直接获取实例。独立的演化路径
         """为预测模型重新编译 多输出会折叠metrics会折叠"""
@@ -303,112 +306,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             'output_names': list(self.model_config.get('output_config', {}).keys())  # 额外保存输出层名称，方便对齐
         }
 
-    def clear_prediction_cache(self):
-        """清空预测缓存"""
-        if hasattr(self, '_prediction_model'):
-            del self._prediction_model
-
-    # def save(self, save_path):
-    #     """保存整个模型（包括配置、窗口、权重、编译配置）"""
-    #     check_is_fitted(self)
-    #     os.makedirs(save_path, exist_ok=True)
-    #
-    #     # 1. 保存模型权重 （TF格式，支持大文件）
-    #     if not hasattr(self, '_prediction_model'):
-    #         self._prediction_model = self.reconstruct_model()
-    #
-    #     # 使用TF格式保存权重（自动分片）
-    #     weights_dir = os.path.join(save_path, 'model_weights')  # 文件夹放很很多文件
-    #     self._prediction_model.save_weights(weights_dir)
-    #
-    #     # 2. 保存架构为Json
-    #     model_json = self._prediction_model.to_json()
-    #     with open(os.path.join(save_path, 'model_architecture.json'), 'w') as f:
-    #         f.write(model_json)
-    #
-    #     # 3. 保存配置信息
-    #     save_configs = {
-    #         'model_config': self.model_config,
-    #         'window_config': {
-    #             'input_width': self.window.input_width,
-    #             'label_width': self.window.label_width,
-    #             'shift': self.window.shift,
-    #             'label_columns': self.window.label_columns,
-    #             'numeric_columns': self.window.numeric_columns,
-    #             'categorical_columns': self.window.categorical_columns,
-    #             'embedding_configs': self.window.embedding_configs,
-    #             'output_configs': self.window.output_configs
-    #         },
-    #         'compile_config': self._get_compile_config_for_save(),  # 确保字典格式
-    #         'tensorflow_version': tf.__version__
-    #     }
-    #
-    #     joblib.dump(save_configs, os.path.join(save_path, 'saved_configs.pkl'))
-    #     logger.debug(f"完整模型已保存到: {save_path}")
-    #     return save_path
-
-    # @classmethod
-    # def load(cls, save_path):
-    #     """加载分片保存的模型"""
-    #
-    #     # 1. 加载配置
-    #     config_path = os.path.join(save_path, 'saved_configs.pkl')
-    #     if not os.path.exists(config_path):
-    #         raise FileNotFoundError(f"配置文件不存在: {config_path}")
-    #
-    #     saved_configs = joblib.load(config_path)
-    #
-    #     # 2. 创建estimator实例
-    #     estimator = cls(model_config=saved_configs['model_config'])
-    #
-    #     # 3. 重建窗口生成器
-    #     estimator.window = EnhancedWindowGenerator(**saved_configs['window_config'])
-    #
-    #     # 4. 从JSON重建模型结构
-    #     model_json_path = os.path.join(save_path, 'model_architecture.json')
-    #     if not os.path.exists(model_json_path):
-    #         raise FileNotFoundError(f"模型架构文件不存在: {model_json_path}")
-    #
-    #     with open(model_json_path, 'r') as f:
-    #         model_json = f.read()
-    #
-    #     # 处理自定义层(这里没有)
-    #     custom_objects = getattr(cls, 'custom_objects', {})
-    #     estimator.prediction_model_ = tf.keras.models.model_from_json(model_json, custom_objects=custom_objects)
-    #
-    #     # 5. 加载分片权重
-    #     weights_dir = os.path.join(save_path, 'model_weights')
-    #     if not os.path.exists(weights_dir):
-    #         raise FileNotFoundError(f"权重文件不存在: {weights_dir}")
-    #     # 自动加载所有分片
-    #     estimator.prediction_model_.load_weights(weights_dir).expect_partial()  # 宽松模式，允许部分权重不匹配
-    #
-    #     # 6. 1 重建优化器实例（saved_configs['compile_config']里面保存的是字典，不是实例）'optimizer': {'class_name': 'Adam', 'config': {...}},
-    #     compile_config = saved_configs['compile_config']
-    #     optimizer_config = compile_config['optimizer']
-    #     optimizer_class = getattr(tf.keras.optimizers, optimizer_config['class_name'])
-    #     optimizer = optimizer_class.from_config(optimizer_config['config'])
-    #     # 6. 2 提取其他配置
-    #     loss_config = compile_config['loss']
-    #     metrics_config = compile_config['metrics']
-    #     loss_weights_config = compile_config['loss_weights']
-    #
-    #     estimator.prediction_model_.compile(
-    #         optimizer=optimizer,  # 优化器实例
-    #         loss=loss_config,  # 字典
-    #         metrics=metrics_config,  # 字典
-    #         loss_weights=loss_weights_config
-    #     )
-    #
-    #     # 7. 标记为已拟合
-    #     estimator.is_fitted_ = True
-    #
-    #     # training_model_可以为None，因为不需要重新训练
-    #     estimator.training_model_ = None
-    #
-    #     logger.debug(f"模型已从 {save_path} 加载")
-    #     return estimator
-
     def __getstate__(self):
         """序列化时只保留必要信息"""
         state = self.__dict__.copy()
@@ -425,76 +322,8 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.__dict__.update(state)
 
         if hasattr(self, 'weights_path') and os.path.exists(self.weights_path):
-            self.prediction_model_ = self.reconstruct_model()
+            self.prediction_model_ = self.load_best_model()
             self.window = self._create_window_generator(self.embedding_info, self.model_config['output_config'])
-
-    # def get_deployment_model(self):
-    #     """获取部署用的SavedModel路径"""
-    #
-    #     if not hasattr(self, 'best_checkpoint'):
-    #         raise ValueError('未找到最佳模型检查点')
-    #
-    #     savedmodel_dir = os.path.join(self.best_checkpoint, 'saved_model')
-    #
-    #     if not os.path.exists(savedmodel_dir):
-    #         raise FileNotFoundError(
-    #             f"找不到SavedModel目录: {savedmodel_dir}\n"
-    #             "请在训练回调中确保同时保存了SavedModel格式"
-    #         )
-    #
-    #     # 验证SavedModel格式
-    #     if not os.path.exists(os.path.join(savedmodel_dir, 'saved_model.pb')):
-    #         raise ValueError(f"不是有效的SavedModel格式: {savedmodel_dir}")
-    #
-    #     print(f"✅ 部署模型位置: {savedmodel_dir}")
-    #     return savedmodel_dir
-    #
-    # def deploy_with_tensorflow_serving(self):
-    #     """生成TensorFlow Serving部署命令"""
-    #
-    #     savedmodel_dir = self.get_deployment_model()
-    #
-    #     # 提取模型名（用于Serving）
-    #     model_name = os.path.basename(os.path.dirname(savedmodel_dir))
-    #
-    #     docker_cmd = f"""
-    # # TensorFlow Serving 部署命令
-    # docker run -p 8501:8501 \\
-    #   --mount type=bind,source={os.path.abspath(savedmodel_dir)},target=/models/{model_name} \\
-    #   -e MODEL_NAME={model_name} \\
-    #   -t tensorflow/serving:latest
-    # """
-    #
-    #     logger.debug("=" * 60)
-    #     logger.debug("TensorFlow Serving 部署命令:")
-    #     logger.debug("=" * 60)
-    #     logger.debug(docker_cmd)
-    #     logger.debug"=" * 60)
-    #     logger.debug(f"REST API端点: http://localhost:8501/v1/models/{model_name}:predict")
-    #     logger.debug(f"gRPC端点: localhost:8500")
-    #     logger.debug("=" * 60)
-    #
-    #     return docker_cmd
-
-    # def predict_via_savedmodel(self, X):
-    #     """通过SavedModel预测（测试部署兼容性）"""
-    #     savedmodel_dir = self.get_deployment_model() # 直接使用保存的SavedModel
-    #
-    #     # 加载SavedModel
-    #     model = tf.saved_model.load(savedmodel_dir)
-    #     serve_fn = model.signatures['serve']
-    #
-    #     # 转换输入格式
-    #     if isinstance(X, (list, tuple)):
-    #         # 多输入
-    #         numeric_input = tf.convert_to_tensor(X[0], dtype=tf.float32)
-    #         categorical_input = tf.convert_to_tensor(X[1], dtype=tf.float32)
-    #         result = serve_fn(numeric_input, categorical_input)
-    #     else:
-    #         # 单输入
-    #         result = serve_fn(X)
-    #
-    #     return result.numpy()
 
 
 class EmbeddingConfig:
@@ -621,3 +450,519 @@ class ModelConfigManager:
             'binary_classification': ['accuracy']
         }
         return defaults.get(loss_type, ['mae'])
+
+
+class TimeSeriesPostProcessor:
+    """
+    功能：
+    1. 时间戳生成和拼接
+    2. 逆转换（标准化还原）
+    3. 多任务结果处理
+    4. 状态保存和加载(预处理的cleaner/pipeline
+    args: config 包括：
+                 'model_name':model_name,
+                 'preprocessor':preprocessor,
+                 'save_dir': save_dir,
+                 'task_names':config.get('output_config').keys().tolist(),
+                 'output_width':config.get('output_width',1),
+                 'time_col_name'：引用原列名
+    """
+
+    @validate_arguments
+    def __init__(self, config: Dict = Field(..., description="配置字典，包含freq、shift等信息")):
+        self.config = config
+        self.serialized_states = {}  # pipeline序列化状态
+        self._temp_preprocessor = None  # 受保护（约定上外部不应直接访问
+
+    def capture_and_save_pipeline_state(self):
+        """
+        捕获并立即序列化保存pipeline状态
+        Args:
+            preprocessor: 预处理器对象
+            save_dir: 保存目录（如果为None，仅保存在内存中）...
+        """
+        # 1. 保存临时引用
+        self._temp_preprocessor = self.config.get('preprocessor', None)
+
+        # 2. 提取并序列化状态
+        serialized_states = {}
+        if hasattr(self._temp_preprocessor, 'pipelines_'):
+            for pipe_name, pipeline in self._temp_preprocessor.pipelines_.items():
+                serialized_states[pipe_name] = {}
+
+                for step_name, transformer in pipeline.named_steps.items():
+                    try:
+                        serialized = pickle.dumps(transformer)
+                        serialized_states[pipe_name][step_name] = {
+                            'pickled': serialized,
+                            'type': type(transformer).__name__,
+                            'params': transformer.get_params() if hasattr(transformer, 'get_params') else {}
+                        }
+                    except Exception as e:
+                        logger.info(f"警告：无法pickle{pipe_name}.{step_name}:{e}")
+                        # 如果pickle失败，只保存关键属性
+                        serialized_states[pipe_name][step_name] = {
+                            'pickled': None,
+                            'type': type(transformer).__name__,
+                            'attributes': self._extract_critical_attributes(transformer)
+                        }
+            self.serialized_states = serialized_states
+
+            # 3. 如果指定了保存目录，立即写入磁盘
+            save_dir = self.config.get('save_dir', '/Users/shibo/Python/NeuralNetwork/saved_model_state')
+            if save_dir:
+                self._save_to_disk(save_dir)
+
+            return self
+
+    def _extract_critical_attributes(self, transformer):
+        attrs = {}
+
+        if hasattr(transformer, 'scaling_config_'):
+            attrs['scaling_config_'] = transformer.scaling_config_.tolist() if hasattr(transformer.scaling_config_,
+                                                                                       'tolist') else transformer.scaling_config_
+        if hasattr(transformer, 'encoders_'):
+            attrs['encoders_'] = transformer.encoders_
+
+        return attrs
+
+    def _save_to_disk(self, save_dir):
+        os.makedirs(save_dir, exist_ok=True)
+        state_file = Path(save_dir) / 'pipeline_states.pkl'
+
+        save_data = {
+            'serialized_states': self.serialized_states,
+            'config': self.config,
+            'saved_at': datetime.now().isoformat()
+        }
+        with state_file.open('wb') as f:
+            pickle.dump(save_data, f)
+        logger.info(f"Pipeline状态已保存到: {state_file}")
+        return save_data
+
+    def custom_inverse_transform(self, raw_predictions, use_saved, target_columns, **kwargs):
+        """
+        智能逆转换：根据情况选择使用内存引用或保存的状态
+        支持多预测的逆转换
+
+        Args:
+           raw_predictions: 原始预测
+           use_saved: True=使用保存的状态，False=尝试使用内存引用
+           **kwargs: 其他参数
+
+        Returns:
+           逆转换后的结果
+        """
+        if isinstance(raw_predictions, (list, tuple)):
+            logger.debug(f"[INFO] 多任务预测: {len(raw_predictions)}个任务")
+
+            processed_tasks = []
+            for i, task_pred in enumerate(raw_predictions):
+                logger.debug(f"[INFO] 任务{i}原始形状: {task_pred.shape}")
+
+                # 去除冗余的最后一个维度(samples, output_width,1)
+                if task_pred.shape[-1] == 1:
+                    task_pred = task_pred.squeeze(-1)
+                    logger.debug(f"[INFO] 任务{i}去除冗余后: {task_pred.shape}")
+                    column_names = [f'pred_{target_columns[i]}_{j}' for j in range(task_pred.shape[1])]
+                    task_pred = pd.DataFrame(task_pred,
+                                             columns=column_names)  # n = samples, columns = [pred_T_0,pred_T_1...]
+
+                if not use_saved and hasattr(self, '_temp_preprocessor'):
+                    task_result = self._inverse_transform_live(predictions=task_pred, target_column=target_columns[i],
+                                                               **kwargs)
+                else:
+                    task_result = self._inverse_transform_from_saved(predictions=task_pred,
+                                                                     target_column=target_columns[i], **kwargs)
+
+                logger.debug(f"[INFO] 任务{i}逆转换后: {task_result.shape}")
+                processed_tasks.append(task_result)
+            return processed_tasks
+
+        else:
+            if not use_saved and hasattr(self, '_temp_preprocessor'):
+                return self._inverse_transform_live(raw_predictions, **kwargs)
+            else:
+                return self._inverse_transform_from_saved(raw_predictions, **kwargs)
+
+    def _inverse_transform_live(self, predictions: pd.DataFrame, pipeline_name='pipeline_4',
+                                step_names=None, target_column: str = None):
+
+        logger.debug(f"[DEBUG] _inverse_transform_live 开始")
+        logger.debug(f"输入形状: {predictions.shape}")
+        logger.debug(f"pipeline_name: {pipeline_name}")
+        logger.debug(f"step_names: {step_names}")
+        logger.debug(f"target_column: {target_column}")
+
+        if step_names is None:
+            step_names = ['engineer_3', 'engineer_4']
+
+        result = predictions
+
+        for step_name in step_names:
+            transformer = self._temp_preprocessor.pipelines_[pipeline_name].named_steps[step_name]
+
+            if step_name == 'engineer_3':
+                valid_col = transformer.numeric_columns_
+                if target_column is not None and target_column in valid_col:  # 只有数值列才进行标准化
+                    result = transformer.custom_inverse_transform(scaled_data=result,
+                                                                  target_column=target_column)  # 更新result
+                else:
+                    logger.debug(f"目标列{target_column}不需要数值的逆标准化转换")
+
+            elif step_name == 'engineer_4':
+                valid_col = transformer.categorical_columns_
+                if target_column is not None and target_column in valid_col:  # 只有分类列才进行编码
+                    result = transformer.custom_inverse_transform(scaled_data=result, target_column=target_column)
+                else:
+                    logger.debug(f"目标列{target_column}不需要分类列的逆编码转换")
+
+            return result
+
+    def _inverse_transform_from_saved(self, predictions, pipeline_name='pipeline_4',
+                                      step_names=None, target_column=None):
+
+        if step_names is None:
+            step_names = ['engineer_3', 'engineer_4']
+
+        result = predictions
+
+        for step_name in step_names:
+            if pipeline_name in self.serialized_states and step_name in self.serialized_states[pipeline_name]:
+                state_info = self.serialized_states[pipeline_name][step_name]
+
+                # 从pickle重建transformer
+                if state_info.get('pickled'):
+                    transformer = pickle.loads(state_info['pickled'])
+
+                    if hasattr(transformer, 'inverse_transform'):
+                        if step_name == 'engineer_3':
+                            valid_col = transformer.numeric_columns_
+                            if target_column is not None and target_column in valid_col:
+                                result = transformer.custom_inverse_transform(scaled_data=result,
+                                                                              target_column=target_column)
+                            else:
+                                logger.debug(f"目标列{target_column}不需要数值的逆标准化转换")
+
+                        else:
+                            valid_col = transformer.categorical_columns_
+                            if target_column is not None and target_column in valid_col:
+                                result = transformer.custom_inverse_transform(scaled_data=result,
+                                                                              target_column=target_column)
+                            else:
+                                logger.debug(f"目标列{target_column}不需要分类列的逆编码转换")
+                else:
+                    logger.debug(f"pickled失败需要手动")
+
+        logger.info(f"最终的数据：{result.tail(10)}")
+        return result
+
+    def add_timestamps(self, predictions, historical_timestamps, freq, shift):
+        """
+        添加时间戳列
+        Args:
+            predictions: 逆转换后的预测结果
+            historical_timestamps: 预测数据的 历史时间戳  datetime64 处理后的
+            freq:频率
+            shift:间隔(单位)
+        Returns:
+            带时间戳的DataFrame
+        """
+        last_time = self._get_last_timestamp(historical_timestamps)
+
+        future_timestamps = self._generate_future_timestamps(last_time,
+                                                             n_steps=self.config.get('output_width', 1),
+                                                             freq=freq,
+                                                             shift=shift)
+        return self._create_result_df(predictions, future_timestamps)
+
+    def _get_last_timestamp(self, timestamps):
+        """获取最后一个时间戳"""
+        if hasattr(timestamps, 'iloc'):
+            last = timestamps.iloc[-1]
+            logger.debug(f"最后一个时间戳：{last}")
+            return last
+        elif isinstance(timestamps, (list, np.ndarray)):
+            last = timestamps[-1]
+            logger.debug(f"最后一个时间戳：{last}")
+            return last
+        else:
+            last = timestamps
+            logger.debug(f"最后一个时间戳：{last}")
+            return last
+
+    def _generate_future_timestamps(self, last_time, n_steps, freq, shift):
+        # 将 shift 转换为时间增量，并确保单位与 freq 6h 的小时匹配
+
+        if isinstance(shift, str):
+            time_shift = pd.Timedelta(shift)
+        elif isinstance(shift, (int, float)):
+            if 'h' in freq:
+                time_shift = pd.Timedelta(hours=shift)
+            elif 'D' in freq:
+                time_shift = pd.Timedelta(days=shift)
+            elif 'min' in freq:
+                time_shift = pd.Timedelta(minutes=shift)
+            else:
+                # 默认使用 freq 的单位，但需要解析 freq 字符串
+                time_shift = shift * pd.Timedelta(freq)
+
+        elif isinstance(shift, pd.Timedelta):
+            time_shift = shift
+        else:
+            time_shift = pd.Timedelta(0)
+
+        start = last_time + time_shift
+        logger.debug(f"预测开始的时间为：{start}，其中last_time:{last_time}，时间time_shift:{time_shift}")
+        return pd.date_range(start=start, periods=n_steps, freq=freq)
+
+    def _create_result_df(self, predictions, timestamps):
+        """单任务和多任务区分（单：1个数组，多：每个元素是一个任务的输出"""
+        if isinstance(predictions, list):
+            # 多任务
+            df = pd.DataFrame({
+                self.config.get('time_col_name', 'Time'): timestamps
+            })
+            steps_ahead = len(timestamps)
+            task_names = self.config.get('task_names')
+
+            for i, task_pred in enumerate(predictions):
+                task_name = task_names[i] if i < len(task_names) else f'task_{i}'
+
+                # 展平截取
+                flat_pred = self._flatten_prediction(task_pred, steps_ahead)
+                df[task_name] = flat_pred  # 逐列添加
+        else:
+            # 单任务
+            flat_pred = self._flatten_prediction(predictions, len(timestamps))
+            df = pd.DataFrame({
+                self.config.get('time_col_name', 'Time'): timestamps,
+                'prediction': flat_pred
+            })
+        return df
+
+    def _flatten_prediction(self, prediction, n_steps):
+        if hasattr(prediction, 'flatten'):
+            flat = prediction.flatten()
+        else:
+            flat = np.array(prediction).flatten()
+        # 确保长度匹配
+        if len(flat) >= n_steps:
+            return flat[:n_steps]
+        elif len(flat) < n_steps:
+            return np.pad(flat, (0, n_steps - len(flat)),
+                          mode='constant', constant_values=np.nan)
+        return flat
+
+
+
+    def save_state(self, save_dir):
+        """保存后处理器状态（用于场景2、3）"""
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 1. 保存状态
+        state_file = os.path.join(save_dir, 'postprocessor_state.pkl')
+        with open(state_file, 'wb') as f:
+            pickle.dump({
+                'config': self.config,
+                'pipeline_states': self.serialized_states,
+                'scaler_states': self.scaler_states,
+                'saved_at': datetime.now().isoformat()
+            }, f)
+
+        # 2. 保存配置
+        config_file = os.path.join(save_dir, 'postprocessor_config.json')
+        with open(config_file, 'w') as f:
+            json.dump(self.config, f, indent=2)
+
+        logger.info(f"后处理器状态已保存到: {save_dir}")
+
+    def calculate_val_mape(self):
+        pass
+# def _extract_transformer_state(self, transformer):
+
+# @classmethod
+# def load_state(cls, save_dir):
+#     """加载后处理器状态（用于场景2、3）"""
+#     state_file = os.path.join(save_dir, 'postprocessor_state.pkl')
+#
+#     if not os.path.exists(state_file):
+#         raise FileNotFoundError(f"状态文件不存在: {state_file}")
+#
+#     with open(state_file, 'rb') as f:
+#         state_data = pickle.load(f)
+#
+#     # 创建实例
+#     processor = cls(state_data['config'])
+#     processor.pipeline_states = state_data['pipeline_states']
+#     processor.scaler_states = state_data.get('scaler_states', {})
+#
+#     print(f"后处理器状态已从 {save_dir} 加载")
+#     return processor
+#
+# def create_deployment_package(self, model, save_dir='deployment_package'):
+#     """创建完整的部署包（用于场景3）"""
+#     import joblib
+#
+#     os.makedirs(save_dir, exist_ok=True)
+#
+#     # 1. 保存模型
+#     if hasattr(model, 'save'):
+#         # Keras模型
+#         model.save(os.path.join(save_dir, 'model.keras'))
+#     else:
+#         # 其他类型模型
+#         joblib.dump(model, os.path.join(save_dir, 'model.joblib'))
+#
+#     # 2. 保存后处理器状态
+#     self.save_state(save_dir)
+#
+#     # 3. 保存部署配置
+#     deployment_config = {
+#         'model_type': type(model).__name__,
+#         'input_shape': getattr(model, 'input_shape', None),
+#         'output_shape': getattr(model, 'output_shape', None),
+#         'postprocessor_config': self.config,
+#         'created_at': datetime.now().isoformat(),
+#         'usage_example': self._create_usage_example()
+#     }
+#
+#     config_file = os.path.join(save_dir, 'deployment_config.json')
+#     with open(config_file, 'w') as f:
+#         json.dump(deployment_config, f, indent=2)
+#
+#     print(f"部署包已创建: {save_dir}")
+#
+# def _create_usage_example(self):
+#     """创建使用示例代码"""
+#     return '''
+# # 使用部署包进行预测
+# from timeseries_postprocessor import TimeSeriesPostProcessor
+# import tensorflow as tf
+# import pandas as pd
+#
+# # 1. 加载模型
+# model = tf.keras.models.load_model('model.keras')
+#
+# # 2. 加载后处理器
+# postprocessor = TimeSeriesPostProcessor.load_state('.')
+#
+# # 3. 预测
+# raw_predictions = model.predict(new_data)
+#
+# # 4. 逆转换
+# inverse_predictions = postprocessor.inverse_transform(
+#    raw_predictions,
+#             use_saved=False,  # 使用内存中的preprocessor
+#             pipeline_name='pipeline_4',
+#             step_names=['engineer_3', 'engineer_4'],
+#             target_columns=['T', 'rh']
+# )
+#
+def save_state(self, save_dir):
+    """保存后处理器状态（用于场景2、3）"""
+    os.makedirs(save_dir, exist_ok=True)
+
+    # 1. 保存状态
+    state_file = os.path.join(save_dir, 'postprocessor_state.pkl')
+    with open(state_file, 'wb') as f:
+        pickle.dump({
+            'config': self.config,
+            'pipeline_states': self.pipeline_states,
+            'scaler_states': self.scaler_states,
+            'saved_at': datetime.now().isoformat()
+        }, f)
+
+    # 2. 保存配置
+    config_file = os.path.join(save_dir, 'postprocessor_config.json')
+    with open(config_file, 'w') as f:
+        json.dump(self.config, f, indent=2)
+
+    print(f"后处理器状态已保存到: {save_dir}")
+
+
+@classmethod
+def load_state(cls, save_dir):
+    """加载后处理器状态（用于场景2、3）"""
+    state_file = os.path.join(save_dir, 'postprocessor_state.pkl')
+
+    if not os.path.exists(state_file):
+        raise FileNotFoundError(f"状态文件不存在: {state_file}")
+
+    with open(state_file, 'rb') as f:
+        state_data = pickle.load(f)
+
+    # 创建实例
+    processor = cls(state_data['config'])
+    processor.pipeline_states = state_data['pipeline_states']
+    processor.scaler_states = state_data.get('scaler_states', {})
+
+    print(f"后处理器状态已从 {save_dir} 加载")
+    return processor
+
+
+def create_deployment_package(self, model, save_dir='deployment_package'):
+    """创建完整的部署包（用于场景3）"""
+    import joblib
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    # 1. 保存模型
+    if hasattr(model, 'save'):
+        # Keras模型
+        model.save(os.path.join(save_dir, 'model.keras'))
+    else:
+        # 其他类型模型
+        joblib.dump(model, os.path.join(save_dir, 'model.joblib'))
+
+    # 2. 保存后处理器状态
+    self.save_state(save_dir)
+
+    # 3. 保存部署配置
+    deployment_config = {
+        'model_type': type(model).__name__,
+        'input_shape': getattr(model, 'input_shape', None),
+        'output_shape': getattr(model, 'output_shape', None),
+        'postprocessor_config': self.config,
+        'created_at': datetime.now().isoformat(),
+        'usage_example': self._create_usage_example()
+    }
+
+    config_file = os.path.join(save_dir, 'deployment_config.json')
+    with open(config_file, 'w') as f:
+        json.dump(deployment_config, f, indent=2)
+
+    print(f"部署包已创建: {save_dir}")
+
+
+def _create_usage_example(self):
+    """创建使用示例代码"""
+    return '''
+# 使用部署包进行预测
+from timeseries_postprocessor import TimeSeriesPostProcessor
+import tensorflow as tf
+import pandas as pd
+
+# 1. 加载模型
+model = tf.keras.models.load_model('model.keras')
+
+# 2. 加载后处理器
+postprocessor = TimeSeriesPostProcessor.load_state('.')
+
+# 3. 预测
+raw_predictions = model.predict(new_data)
+
+# 4. 逆转换
+inverse_predictions = postprocessor.inverse_transform(
+    raw_predictions,
+    pipeline_name='pipeline_4',
+    step_names=['engineer_3', 'engineer_4']
+)
+
+# 5. 添加时间戳
+results = postprocessor.add_timestamps(
+    inverse_predictions,
+    historical_timestamps=historical_timestamps,
+    freq='6H'
+)
+'''

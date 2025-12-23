@@ -1,0 +1,1 @@
+from predictor.model_predictor import TrainedModelPredictor

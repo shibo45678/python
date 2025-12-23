@@ -87,7 +87,7 @@ class TestUnifiedFeatureScalerIntegration:
         scaled_data = scaler.fit_transform(original_data)
 
         # 逆向转换
-        restored_data = scaler.inverse_transform(scaled_data)
+        restored_data = scaler.custom_inverse_transform(scaled_data)
 
         # 验证形状一致
         assert restored_data.shape == original_data.shape

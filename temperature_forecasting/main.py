@@ -8,12 +8,13 @@
 # missing列logger 从提示改为报错 尽早暴露/结果无意义/
 # 统一下划线/标准化列有不存在需要提前验证
 import copy
+import os
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from sklearn.utils.validation import check_is_fitted
 
 from utils.tensorflow_config import TensorFlowConfig
-from models.NeuralNetwork import TimeSeriesEstimator
+from models.NeuralNetwork import TimeSeriesEstimator, TimeSeriesPostProcessor
 from pipelines.preprocess_pipeline import CompletePreprocessor
 from data.data_preprocessing import TimeSeriesSplitter
 from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, DeleteUselessCols, ProblemColumnsFixed,
@@ -28,6 +29,7 @@ from data.data_preprocessing import SystematicResampler
 from data.feature_engineering import (GenerationFromNumeric, ProcessTimeseriesColumns, BasedOnCorrSelector,
                                       UnifiedFeatureScaler, CategoricalEncoding)
 from data.exploration import VisualizationForNeural
+from predictor import TrainedModelPredictor
 import logging.config
 from logging_config import LOGGING_CONFIG
 import logging
@@ -41,6 +43,9 @@ def main():
     '''
     1. 严格按照数据的【处理顺序】使用‘class’，并标记'len_change'(这里将改变数据长度的步骤，手动处理）
     2. 手动处理的类:是无法放进pipeline的类，不会继承BaseEstimator和TransfromerMixin。并且使用learn_process处理。
+    3. 一次训练直接 predict（keras格式），
+       隔日预测 predict_with_best_checkpoint(new_data)（keras格式） ，
+       专用部署 save + load(格式Saved Model)
     '''
     check_outliers_config = {'method': 'iqr', 'threshold': 1.5}
     download_duplicates_config = {
@@ -138,6 +143,7 @@ def main():
     # 2. 数据集分割
     splitter = TimeSeriesSplitter(train_size=0.6, val_size=0.3, test_size=0.1, shuffle=False)
     df_train, df_val, df_test = splitter.learn_process(raw_data)
+    logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
 
     # 3. 数据预处理(生成训练、验证、预测数据）
     preprocessor = CompletePreprocessor(preparation_configs)
@@ -229,29 +235,110 @@ def main():
 
     data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
 
-    def train_single_config(config, X, y, preprocessor, new_data):
-        name = config.get('model_type')
-        model = TimeSeriesEstimator(config)
-        X_copy = copy.deepcopy(X)
-        features_temp_val_copy = copy.deepcopy(features_temp_val)
+    # 并行训练和预测
+    def train_single_config(config, X, y, preprocessor, new_data,
+                            save_dir=None):
+        """
+        单个模型的训练和预测流程
 
-        # 训练
-        model.fit(X_copy, y=None)
-        model.save(f'./saved_{name}/tf_format/')
+        Args:
+            config: 模型配置
+            X: 训练数据（字典-训练数据和验证数据）
+            y: 标签（可能为None）
+            preprocessor: 预处理器对象,提取逆转换pipeline步骤
+            historical_timestamps: 历史时间戳，用于预测结果展示
+            new_data: 测试 / 新数据（用于一次预测）
+            save_dir: 保存目录，如果为None则不保存
+        Returns:
+            dict: 包含模型、预测结果和postprocessor
+        """
+        model_name = config.get('model_type', 'unknown')
+        time_column = config.get('time_column')
 
-        # 重构、预测
-        predictions = model.predict(features_temp_val_copy)  # # N天后加载使用load
-        print(f"生成 {len(predictions)} 个预测结果")
+        try:
+            logger.info(f"开始训练模型: {model_name}")
 
-        # 逆转换
-        inverse_1 = preprocessor.pipelines_.get('pipeline_4').named_steps['engineer_3'].inverse_transform(
-            scaled_data=predictions, target_columns=['T', 'rh'])
+            # 1.创建模型实例
+            model = TimeSeriesEstimator(config)
 
-        inverse_2 = preprocessor.pipelines_.get('pipeline_4').named_steps['engineer_4'].inverse_transform(inverse_1)
+            # 2.训练（加载最优检查点）
+            X_copy = copy.deepcopy(X)
+            model.fit(X_copy, y=None)  # 包括训练集和验证集，一起用于模型训练,注意：以字典方式传递
 
-        print(f"最终的数据：{inverse_2.head(10)}")
+            # 3.创建后处理器并捕获pipeline状态
+            postprocessor = TimeSeriesPostProcessor(
+                {'model_name': model_name,
+                 'preprocessor': preprocessor,
+                 'save_dir': save_dir,
+                 'task_names': list(config.get('output_config').keys()),
+                 'output_width': config.get('output_width', 1),
+                 'time_col_name':config.get('time_column','Time')
+                 }
+            )
 
-        return inverse_2
+            # 捕获preprocessor状态
+            postprocessor.capture_and_save_pipeline_state()
+
+            # 4. 预测
+            features_temp_data_copy = copy.deepcopy(new_data)
+            raw_predictions = model.predict(features_temp_data_copy)  # 测试数据
+            logger.info(f"测试集生成 {len(raw_predictions)} 个预测结果，每个结果代表一个预测label，形状：shape:{raw_predictions[0].shape}")
+
+            # 5. 逆转换（使用后处理器）
+            inverse_predictions = postprocessor.custom_inverse_transform(
+                raw_predictions=raw_predictions,
+                use_saved=False,  # 使用【内存】中的preprocessor
+                pipeline_name='pipeline_4',
+                step_names=['engineer_3', 'engineer_4'],
+                target_columns=list(config.get('output_config').keys()))
+
+            # 6. 添加时间戳
+            final_results = postprocessor.add_timestamps(
+                predictions=inverse_predictions,
+                historical_timestamps=features_temp_data_copy[time_column],
+                freq='6h',
+                shift=config.get('shift', 0),
+            )
+            logger.info(f"模型 {model_name} 训练成功")
+            logger.info(f"最终预测结果:{final_results}")
+            logger.info(f"最终预测结果形状: {final_results.shape}")
+
+            # mape（验证集和测试集都需要）
+
+
+            # 7. 保存状态
+            if save_dir:
+                model_save_dir = os.path.join(save_dir, model_name)
+                os.makedirs(model_save_dir, exist_ok=True)
+
+                # 保存模型（调整）
+                # 保存后处理器状态
+                postprocessor.save_state(model_save_dir)
+                # 保存预测结果
+                results_file = os.path.join(model_save_dir, 'predictions.csv')
+                final_results.to_csv(results_file, index=False)
+                logger.info(f"模型状态已保存到：{model_save_dir}")
+
+            return {
+                'model_name': model_name,
+                'model': model,
+                'postprocessor': postprocessor,
+                'predictions': final_results,
+                'raw_predictions': raw_predictions,
+                'config': config,
+                'success': True
+            }
+
+        except Exception as e:
+            logger.error(f"模型 {model_name} 训练失败: {str(e)}", exc_info=True)
+            return {
+                'model_name': model_name,
+                'error': str(e),
+                'success': False,
+                'config': config
+            }
+
+    # parallel_train_all_models
 
     configs = [multi_lstm_model_config1]  # multi_cnn_model_config
 
@@ -259,7 +346,8 @@ def main():
     trained_models = []
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(train_single_config, config, X=data, y=None, preprocessor=preprocessor,
-                                   new_data=features_temp_test)
+                                   new_data=features_temp_test,
+                                   save_dir='/Users/shibo/Python/NeuralNetwork/saved_model_state')
                    for config in configs]
 
         for future, config in zip(futures, configs):
@@ -272,6 +360,7 @@ def main():
                 failed_configs.append(config)
 
     print(f"完成: {len(trained_models)} 个成功, {len(failed_configs)} 个失败")
+
     return trained_models, failed_configs
 
 
@@ -284,6 +373,7 @@ if __name__ == "__main__":
 # save的节点 是否是最佳模型
 # 多变量输出 如何协调权重，以及梯度剪裁
 
+# 并行的模型配置
 # multi_lstm_model_config2 = {**base_model_config, **{
 #     'model_type': 'multi_lstm2',
 #     'learning_rate': 0.001,
@@ -303,3 +393,9 @@ if __name__ == "__main__":
 #     'epochs': 20,
 #     'verbose': 2
 # }}
+
+
+# 直接加载训练模型并预测
+# predictor = TrainedModelPredictor("/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm1_20251219_100333/tf_checkpoints/model_epoch_2/")
+# predictions = predictor.predict(new_cleaned_data)
+# 预测最后一步的处理
