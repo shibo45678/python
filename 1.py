@@ -290,3 +290,23 @@ print(f"\n模型metrics列表: {loaded_model.metrics}")
 #         config = json.load(f)
 #
 #     return model, config
+import numpy as np
+
+
+# 创建一个测试数组
+arr = np.arange(34)  # [0,1,2,...,33]
+
+label_start = 29
+label_width = 5
+
+# 方法1：切片
+labels_slice = arr[label_start:label_start+label_width]  # 29:34
+print("切片结果:", labels_slice)  # [29,30,31,32,33] ✅
+labels_slice_ = arr[label_start:]
+print("切片结果:", labels_slice_)
+
+# 方法2：索引列表
+label_indices = list(range(label_start, label_start+label_width))
+print("索引列表:", label_indices)  # [29,30,31,32,33] ✅
+
+print("是否相等:", list(labels_slice) == label_indices)  # True ✅

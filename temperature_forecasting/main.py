@@ -12,7 +12,6 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from sklearn.utils.validation import check_is_fitted
-
 from utils.tensorflow_config import TensorFlowConfig
 from models.NeuralNetwork import TimeSeriesEstimator, TimeSeriesPostProcessor
 from pipelines.preprocess_pipeline import CompletePreprocessor
@@ -24,12 +23,11 @@ from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, D
                                    CategoricalMissingValueHandler,
                                    ColumnsTypeIdentify,
                                    ConvertCategoricalColumns,
-                                   ConvertNumericColumns)
-from data.data_preprocessing import SystematicResampler
-from data.feature_engineering import (GenerationFromNumeric, ProcessTimeseriesColumns, BasedOnCorrSelector,
+                                   ConvertNumericColumns, ProcessTimeseriesColumns)
+from data.data_preprocessing import SimpleTimeSampler
+from data.feature_engineering import (GenerationFromNumeric,GenerationFromTimeseries,  BasedOnCorrSelector,
                                       UnifiedFeatureScaler, CategoricalEncoding)
 from data.exploration import VisualizationForNeural
-from predictor import TrainedModelPredictor
 import logging.config
 from logging_config import LOGGING_CONFIG
 import logging
@@ -73,7 +71,7 @@ def main():
         {'custom': {'columns': ['wv', 'max. wv'], 'handle_method': ['custom', 'custom'],
                     'detect_function': partial(detect_, threshold=0),
                     'handle_function': partial(handle_)}}],
-        'generate_outlier_indicator': ['T', 'p']
+        'generate_outlier_indicator': ['T', 'rh']
     }
 
     categorical_outliers_config = {
@@ -90,7 +88,7 @@ def main():
         ],
         'skip_fill': [],
         'smart_fill_remain': True,
-        'important_columns': ['T', 'p'],
+        'important_columns': ['T', 'rh'],
     }
     # 新特征生成后
     scaling_config = {
@@ -102,15 +100,14 @@ def main():
             {'minmax': {'columns': ['T'], 'feature_range': (-1, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
             {'robust': {'columns': [], 'quantile_range': (10, 90)}}
         ],
-        'skip_scale': ['is_night', 'Day_sin', 'Day_cos', 'Year_sin', 'Year_cos', 'Month_sin', 'Month_cos']
+        'skip_scale': ['is_night', 'Day_sin', 'Day_cos', 'Year_sin', 'Year_cos', 'Month_sin', 'Month_cos','Season_sin','Season_cos']
         # 跳过二分类列(数值型）/ 异常值标记列自动skip
     }
 
     # 先初始化 再延迟计算（lazy evaluation）
     preparation_configs = [
         {'obj_list': [DescribeData(log_level="DEBUG"), DeleteUselessCols()], 'len_change': False},
-        {'obj_list': [RemoveDuplicates(download_config=download_duplicates_config)],
-         'len_change': True},
+        {'obj_list': [RemoveDuplicates(download_config=download_duplicates_config),], 'len_change': True},
         {'obj_list': [ColumnsTypeIdentify(),
                       ConvertCategoricalColumns(categorical_columns=[]),
                       ConvertNumericColumns(preserve_object_integer_types=True, exclude_cols=['Date Time']),
@@ -119,16 +116,15 @@ def main():
                                          download_config=download_outliers_details_config),
                       NumericOutlierProcessor(method_config=numeric_outliers_config),  # iqr / 业务初筛 --> 异常值初筛
                       CategoricalOutlierProcessor(method_config=categorical_outliers_config, strategy='consolidate'),
-                      NumericMissingValueHandler(method_config=numeric_missing_config),  # 填充缺失值
+                      NumericMissingValueHandler(method_config=numeric_missing_config),  # 填充缺失值(时间缺失 暂不填充。等采样完）
                       CategoricalMissingValueHandler(method_config=None, pass_through=True),  # 后续隔离森林精细去异常
                       ],
          'len_change': False},
 
-        {'obj_list': [SystematicResampler(start_index=5, step=6, reset_index=True)], 'len_change': True},
+        {'obj_list': [SimpleTimeSampler(time_column='Date Time', freq_hours=1, minute=0, second=0)], 'len_change': True},
 
         {'obj_list': [GenerationFromNumeric(dir_cols=['wd'], var_cols=['wv', 'max. wv'], plot=False),
-                      ProcessTimeseriesColumns(interactive=False, plot=False),
-                      # 关闭交互式功能 + 开启自动检测时间列
+                      GenerationFromTimeseries(time_column='Date Time',plot=False),
                       BasedOnCorrSelector(pass_through=True),
                       UnifiedFeatureScaler(method_config=scaling_config, algorithm='lstm'),  # 自动根据数据分布及算法类型进行推荐标准化
                       CategoricalEncoding(handle_unknown='ignore', unknown_token='__UNKNOWN__'),
@@ -141,38 +137,42 @@ def main():
     raw_data = loader.learn_process()
 
     # 2. 数据集分割
-    splitter = TimeSeriesSplitter(train_size=0.6, val_size=0.3, test_size=0.1, shuffle=False)
+    splitter = TimeSeriesSplitter(train_size=0.8, val_size=0.15, test_size=0.05, shuffle=False)
     df_train, df_val, df_test = splitter.learn_process(raw_data)
     logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
 
-    # 3. 数据预处理(生成训练、验证、预测数据）
+    # 3. 检查预测数据集时间列的连续性（时间列智能检测并转换 + 时间序列缺失情况） Date Time
+    time_detector = ProcessTimeseriesColumns(interactive=False, create_extract_continuous=True)
+    valid_df_test,_ = time_detector.learn_process(df_test,y=None)
+    time_col = time_detector.valid_time_column_
+
+    # 4. 数据预处理(生成训练、验证、预测数据）
     preprocessor = CompletePreprocessor(preparation_configs)
     features_temp_train, _ = preprocessor.train(features=df_train, labels=None)
 
     # 立即检查状态
-    logger.debug("=== 训练后立即检查 ===")
-    for name, pipeline in preprocessor.pipelines_.items():
-        logger.debug(f"{name}:")
-        try:
-            check_is_fitted(pipeline)
-            logger.debug("  ✓ Pipeline 整体已拟合")
-        except Exception as e:
-            logger.debug(f"  ✗ Pipeline 整体未拟合: {e}")
-
-        # 检查每个步骤
-        for step_name, transformer in pipeline.steps:
-            try:
-                check_is_fitted(transformer)
-                logger.debug(f"    ✓ {step_name} 已拟合")
-            except Exception as e:
-                logger.debug(f"    ✗ {step_name} 未拟合: {e}")
+    # logger.debug("=== 训练后立即检查 ===")
+    # for name, pipeline in preprocessor.pipelines_.items():
+    #     logger.debug(f"{name}:")
+    #     try:
+    #         check_is_fitted(pipeline)
+    #         logger.debug("  ✓ Pipeline 整体已拟合")
+    #     except Exception as e:
+    #         logger.debug(f"  ✗ Pipeline 整体未拟合: {e}")
+    #
+    #     # 检查每个步骤
+    #     for step_name, transformer in pipeline.steps:
+    #         try:
+    #             check_is_fitted(transformer)
+    #             logger.debug(f"    ✓ {step_name} 已拟合")
+    #         except Exception as e:
+    #             logger.debug(f"    ✗ {step_name} 未拟合: {e}")
 
     features_temp_val, _ = preprocessor.transform_predict(features=df_val, labels=None)
-    features_temp_test, _ = preprocessor.transform_predict(features=df_test, labels=None)
+    features_temp_test, _ = preprocessor.transform_predict(features=valid_df_test, labels=None)
 
     num_cols = preprocessor.get_specific_attribute(4, 'engineer_3', 'numeric_columns_')  # 取第5个class的第4步的属性
     cat_cols = preprocessor.get_specific_attribute(4, 'engineer_4', 'categorical_columns_')
-    time_col = preprocessor.get_specific_attribute(4, 'engineer_1', 'valid_time_column_')
 
     # 4. 并行模型训练、评估
     # single_base_model_config = {'numeric_columns': num_cols,
@@ -180,7 +180,7 @@ def main():
     #                             'time_column': time_col,
     #                             'input_width': 6,
     #                             'output_width': 5,
-    #                             'shift': 24,
+    #                             'shift': 4,
     #                             'output_config': {
     #                                 'T': {'type': 'regression',
     #                                       'loss': 'mse',
@@ -296,7 +296,9 @@ def main():
             final_results = postprocessor.add_timestamps(
                 predictions=inverse_predictions,
                 historical_timestamps=features_temp_data_copy[time_column],
-                freq='6h',
+                input_width = config.get('input_width',6),
+                output_width=config.get('output_width', 5),
+                freq='h',
                 shift=config.get('shift', 0),
             )
             logger.info(f"模型 {model_name} 训练成功")

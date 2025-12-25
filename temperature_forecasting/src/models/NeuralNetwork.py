@@ -4,7 +4,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 from typing import Dict, Any
-
+import re
 import joblib
 import shutil
 
@@ -657,52 +657,87 @@ class TimeSeriesPostProcessor:
         logger.info(f"最终的数据：{result.tail(10)}")
         return result
 
-    def add_timestamps(self, predictions, historical_timestamps, freq, shift):
+    def add_timestamps(self, predictions, historical_timestamps, input_width: int, output_width:int,shift: int, freq: str):
         """
-        添加时间戳列
-        Args:
-            predictions: 逆转换后的预测结果
-            historical_timestamps: 预测数据的 历史时间戳  datetime64 处理后的
-            freq:频率
-            shift:间隔(单位)
-        Returns:
-            带时间戳的DataFrame
+        参数:
+            historical_timestamps: 预测数据的 历史时间戳  datetime64 处理后的 （长度7009）
+            input_width: 输出数据时间步
+            shift：偏移的时间步 24
+            freq: 时间频率（'h'）
+        返回:
+            windows_start_times: 每个窗口的基准时间
+            forecast_timestamps: 每个窗口的预测时间点
         """
-        last_time = self._get_last_timestamp(historical_timestamps)
 
-        future_timestamps = self._generate_future_timestamps(last_time,
-                                                             n_steps=self.config.get('output_width', 1),
-                                                             freq=freq,
-                                                             shift=shift)
-        return self._create_result_df(predictions, future_timestamps)
+        # 预测样本数（只需要输入）
+        # n_windows = len(historical_timestamps) - input_width - shift + 1
 
-    def _get_last_timestamp(self, timestamps):
-        """获取最后一个时间戳"""
-        if hasattr(timestamps, 'iloc'):
-            last = timestamps.iloc[-1]
-            logger.debug(f"最后一个时间戳：{last}")
-            return last
-        elif isinstance(timestamps, (list, np.ndarray)):
-            last = timestamps[-1]
-            logger.debug(f"最后一个时间戳：{last}")
-            return last
-        else:
-            last = timestamps
-            logger.debug(f"最后一个时间戳：{last}")
-            return last
+        # 训练窗口数（有真实标签的） len -total_window + 1 =1548 - 34 +1 =1515
+        n_windows = len(historical_timestamps) - (input_width + shift  + output_width- 1) +1
 
-    def _generate_future_timestamps(self, last_time, n_steps, freq, shift):
-        # 将 shift 转换为时间增量，并确保单位与 freq 6h 的小时匹配
+        window_start_times = []  # 每个窗口的基准时间
+        future_timestamps = []  # 每个窗口的预测时间点列表
 
-        if isinstance(shift, str):
-            time_shift = pd.Timedelta(shift)
-        elif isinstance(shift, (int, float)):
-            if 'h' in freq:
-                time_shift = pd.Timedelta(hours=shift)
+        # 先检查数据
+        # print("=== 数据检查 ===")
+        # print(f"数据总长度: {len(historical_timestamps)}")
+        # print(f"数据时间范围: {historical_timestamps.iloc[0]} 到 {historical_timestamps.iloc[-1]}")
+
+        # 计算窗口
+        # n_windows = len(historical_timestamps) - (input_width + shift  + output_width- 1) +1
+        # print(f"\n=== 窗口计算 ===")
+        # print(f"input_width: {input_width}")
+        # print(f"计算出的窗口数: {n_windows}")
+        #
+        # # 检查第一个和最后一个窗口
+        # print(f"\n第一个窗口:")
+        # first_start_idx = 0
+        # first_end_idx = first_start_idx + input_width - 1
+        # print(f"  索引: {first_start_idx} 到 {first_end_idx}")
+        # print(f"  时间: {historical_timestamps.iloc[first_start_idx]} 到 {historical_timestamps.iloc[first_end_idx]}")
+        #
+        # print(f"\n最后一个窗口:")
+        # last_start_idx = n_windows - 1
+
+
+        for i in range(n_windows):  # 预测不需要有真实值的窗口 最后1个i位置：len-input+1-1
+            last_time = historical_timestamps.iloc[i + input_width - 1]  # 输入窗口的最后一条
+            window_start_times.append(last_time)
+
+
+            # 从base_time + shift(时间步）开始预测
+            future_time = self._generate_future_timestamps(last_time,
+                                                           n_steps=self.config.get('output_width', 1),
+                                                           freq=freq,
+                                                           shift=shift)
+            future_timestamps.append(future_time)
+            #  Timestamp('2016-10-28 18:00:00') /
+            #  DatetimeIndex(['2016-10-29 18:00:00', '2016-10-29 19:00:00', '2016-10-29 20:00:00', '2016-10-29 21:00:00', '2016-10-29 22:00:00'], dtype='datetime64[ns]', freq='h')
+
+        print("window_start_times 验证:")
+        print(f"长度: {len(window_start_times)}")
+        print(f"第一个: {window_start_times[0]}")
+        print(f"最后一个: {window_start_times[-1]}")
+        print(f"应该是: {historical_timestamps.iloc[-5]} - 24小时")
+
+        return self._create_result_df(predictions, window_start_times, future_timestamps)
+
+    def _generate_future_timestamps(self, last_time, n_steps: int, freq: str, shift: int):
+        # 将 shift=24 时间步* 毎步间隔1小时= 转换为时间增量24小时，并确保单位与 freq 1h 的小时匹配
+
+        if isinstance(shift, (int, float)):
+            match = re.match(r'(\d+)', freq)
+            if match:
+                freq_num = int(match.group(1))
+            else:
+                freq_num = 1
+
+            if 'h' in freq.lower():
+                time_shift = pd.Timedelta(hours=shift * freq_num)
             elif 'D' in freq:
-                time_shift = pd.Timedelta(days=shift)
+                time_shift = pd.Timedelta(days=shift * freq_num)
             elif 'min' in freq:
-                time_shift = pd.Timedelta(minutes=shift)
+                time_shift = pd.Timedelta(minutes=shift * freq_num)
             else:
                 # 默认使用 freq 的单位，但需要解析 freq 字符串
                 time_shift = shift * pd.Timedelta(freq)
@@ -713,72 +748,125 @@ class TimeSeriesPostProcessor:
             time_shift = pd.Timedelta(0)
 
         start = last_time + time_shift
-        logger.debug(f"预测开始的时间为：{start}，其中last_time:{last_time}，时间time_shift:{time_shift}")
         return pd.date_range(start=start, periods=n_steps, freq=freq)
 
-    def _create_result_df(self, predictions, timestamps):
-        """单任务和多任务区分（单：1个数组，多：每个元素是一个任务的输出"""
-        if isinstance(predictions, list):
-            # 多任务
-            df = pd.DataFrame({
-                self.config.get('time_col_name', 'Time'): timestamps
-            })
-            steps_ahead = len(timestamps)
-            task_names = self.config.get('task_names')
+    def _create_result_df(self, predictions, window_start_times: list, future_timestamps: list):
+        """单任务和多任务区分（单：1个数组，多：每个元素是一个任务的输出
+            df三列：开始时间、预测时间列、任务1，任务2"""
+        task_names = self.config.get('task_names')
 
-            for i, task_pred in enumerate(predictions):
+        predictions_dict = {}
+        if isinstance(predictions, list):  # 多任务
+            for i, pred in enumerate(predictions):
                 task_name = task_names[i] if i < len(task_names) else f'task_{i}'
+                predictions_dict[task_name] = pred
 
-                # 展平截取
-                flat_pred = self._flatten_prediction(task_pred, steps_ahead)
-                df[task_name] = flat_pred  # 逐列添加
+        elif predictions.ndim == 3:  # 单输出但多步：最后一个维度是任务维度(多分类) 待确认
+            num_tasks = predictions.shape[2]
+            for i in range(num_tasks):
+                task_name = task_names[i] if i < len(task_names) else f'task_{i}'
+                predictions_dict[task_name] = predictions[:, :, i]
         else:
-            # 单任务
-            flat_pred = self._flatten_prediction(predictions, len(timestamps))
-            df = pd.DataFrame({
-                self.config.get('time_col_name', 'Time'): timestamps,
-                'prediction': flat_pred
-            })
-        return df
+            # 其他格式：
+            if len(task_names) > 0:
+                predictions_dict[task_names[0]] = predictions
+            else:
+                predictions_dict['prediciton'] = predictions
 
-    def _flatten_prediction(self, prediction, n_steps):
-        if hasattr(prediction, 'flatten'):
-            flat = prediction.flatten()
-        else:
-            flat = np.array(prediction).flatten()
-        # 确保长度匹配
-        if len(flat) >= n_steps:
-            return flat[:n_steps]
-        elif len(flat) < n_steps:
-            return np.pad(flat, (0, n_steps - len(flat)),
-                          mode='constant', constant_values=np.nan)
-        return flat
+        num_windows = len(predictions[0])
+        print(num_windows)
+
+        all_windows = []
+        for i in range(num_windows):  # 窗口数量
+            start_times = window_start_times[i]
+            future_times = future_timestamps[i]
+
+            for step in range(self.config.get('output_width', 1)):
+                window = {
+                    'window_end': start_times,
+                    'forecast_time': future_times[step]}
+                window.update(
+                    **{f'{task_name}_pred': pred_values.iloc[i].iloc[step] for task_name, pred_values in
+                       predictions_dict.items()}  # 窗口定位 i
+                )
+
+                all_windows.append(window)
+
+        print(all_windows[-1])  # {'window_end': Timestamp('2016-12-31 00:00:00'), 'forecast_time': Timestamp('2017-01-01 04:00:00'), 'T_pred': -1.5133829, 'rh_pred': 87.85305}
+
+        results_df = pd.DataFrame(all_windows)  # pd.concat 是组合df的，但这里是字典
+
+        logger.debug(f"生成的预测记录总数: {len(results_df)}")  # 6980×5=34900
+        logger.debug(f"CSV文件预览:")
+        logger.debug(results_df.head(10))
+
+        results_df.to_csv(
+            '/Users/shibo/Python/NeuralNetwork/temperature_forecasting/data/intermediate/predictions_result.csv',
+            index=False)
+        return results_df
+        # T_actual  merge / 少最后一个数据点
+
+        # # else:
+        # # 单任务
+        # flat_pred = self._flatten_prediction(predictions, len(timestamps))
+        # df = pd.DataFrame({
+        #     self.config.get('time_col_name', 'Time'): timestamps,
+        #     'prediction': flat_pred
+        # })
+        #
+        # all_rows = []
+        #
+        # for i in range(len(predictions[0])):  # 窗口数量
+        #
+
+    #
+    #         return df
+    #
+    # # df = pd.DataFrame({
+    # #     self.config.get('time_col_name', 'Date Time'): timestamps
+    # # })
+    # # steps_ahead = len(timestamps)
+    # #
+    #
+    # # def _flatten_prediction(self, prediction, n_steps):
+    # #     if hasattr(prediction, 'flatten'):
+    # #         flat = prediction.flatten()
+    # #     else:
+    # #         flat = np.array(prediction).flatten()
+    # #     # 确保长度匹配
+    # #     if len(flat) >= n_steps:
+    # #         return flat[:n_steps]
+    # #     elif len(flat) < n_steps:
+    # #         return np.pad(flat, (0, n_steps - len(flat)),
+    # #                       mode='constant', constant_values=np.nan)
+    # #     return flat
+    #
+    # # def save_state(self, save_dir):
+    # #     """保存后处理器状态（用于场景2、3）"""
+    # #     os.makedirs(save_dir, exist_ok=True)
+    # #
+    # #     # 1. 保存状态
+    # #     state_file = os.path.join(save_dir, 'postprocessor_state.pkl')
+    # #     with open(state_file, 'wb') as f:
+    # #         pickle.dump({
+    # #             'config': self.config,
+    # #             'pipeline_states': self.serialized_states,
+    # #             'scaler_states': self.scaler_states,
+    # #             'saved_at': datetime.now().isoformat()
+    # #         }, f)
+    # #
+    # #     # 2. 保存配置
+    # #     config_file = os.path.join(save_dir, 'postprocessor_config.json')
+    # #     with open(config_file, 'w') as f:
+    # #         json.dump(self.config, f, indent=2)
+    # #
+    # #     logger.info(f"后处理器状态已保存到: {save_dir}")
+    # #
+    # # def calculate_val_mape(self):
+    # #     pass
+    #
 
 
-
-    def save_state(self, save_dir):
-        """保存后处理器状态（用于场景2、3）"""
-        os.makedirs(save_dir, exist_ok=True)
-
-        # 1. 保存状态
-        state_file = os.path.join(save_dir, 'postprocessor_state.pkl')
-        with open(state_file, 'wb') as f:
-            pickle.dump({
-                'config': self.config,
-                'pipeline_states': self.serialized_states,
-                'scaler_states': self.scaler_states,
-                'saved_at': datetime.now().isoformat()
-            }, f)
-
-        # 2. 保存配置
-        config_file = os.path.join(save_dir, 'postprocessor_config.json')
-        with open(config_file, 'w') as f:
-            json.dump(self.config, f, indent=2)
-
-        logger.info(f"后处理器状态已保存到: {save_dir}")
-
-    def calculate_val_mape(self):
-        pass
 # def _extract_transformer_state(self, transformer):
 
 # @classmethod
@@ -966,3 +1054,18 @@ results = postprocessor.add_timestamps(
     freq='6H'
 )
 '''
+
+    # def _get_last_timestamp(self, timestamps):
+    #     """获取最后一个时间戳"""
+    #     if hasattr(timestamps, 'iloc'):
+    #         last = timestamps.iloc[-1]
+    #         logger.debug(f"最后一个时间戳：{last}")
+    #         return last
+    #     elif isinstance(timestamps, (list, np.ndarray)):
+    #         last = timestamps[-1]
+    #         logger.debug(f"最后一个时间戳：{last}")
+    #         return last
+    #     else:
+    #         last = timestamps
+    #         logger.debug(f"最后一个时间戳：{last}")
+    #         return last
