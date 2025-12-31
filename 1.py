@@ -1,39 +1,39 @@
 # 创建并编译一个模型
-original_model = tf.keras.Sequential([
-    tf.keras.layers.Dense(10, input_shape=(5,)),
-    tf.keras.layers.Dense(1)
-])
-
-original_model.compile(
-    optimizer='adam',
-    loss='mse',
-    metrics=['mae']
-)
-
-# 保存为 .keras
-original_model.save('test_model.keras')
-
-# 加载模型
-loaded_model = tf.keras.models.load_model('test_model.keras')
-
-# 检查编译状态
-print("原始模型:")
-print(f"  优化器: {original_model.optimizer}")
-print(f"  Loss: {original_model.loss}")
-print(f"  Metrics: {original_model.metrics}")
-
-print("\n加载的模型:")
-print(f"  优化器: {loaded_model.optimizer}")
-print(f"  Loss: {loaded_model.loss}")
-print(f"  Metrics: {loaded_model.metrics}")
-
-# 检查是否可以直接使用
-print(f"\n是否可以直接predict? {'✅' if hasattr(loaded_model, 'predict') else '❌'}")
-print(f"是否可以直接evaluate? {'✅' if hasattr(loaded_model, 'evaluate') else '❌'}")
-print(f"是否可以直接compile? {'✅' if hasattr(loaded_model, 'compile') else '❌'}")
-
-# 验证 metrics 配置
-print(f"\n模型metrics列表: {loaded_model.metrics}")
+# original_model = tf.keras.Sequential([
+#     tf.keras.layers.Dense(10, input_shape=(5,)),
+#     tf.keras.layers.Dense(1)
+# ])
+#
+# original_model.compile(
+#     optimizer='adam',
+#     loss='mse',
+#     metrics=['mae']
+# )
+#
+# # 保存为 .keras
+# original_model.save('test_model.keras')
+#
+# # 加载模型
+# loaded_model = tf.keras.models.load_model('test_model.keras')
+#
+# # 检查编译状态
+# print("原始模型:")
+# print(f"  优化器: {original_model.optimizer}")
+# print(f"  Loss: {original_model.loss}")
+# print(f"  Metrics: {original_model.metrics}")
+#
+# print("\n加载的模型:")
+# print(f"  优化器: {loaded_model.optimizer}")
+# print(f"  Loss: {loaded_model.loss}")
+# print(f"  Metrics: {loaded_model.metrics}")
+#
+# # 检查是否可以直接使用
+# print(f"\n是否可以直接predict? {'✅' if hasattr(loaded_model, 'predict') else '❌'}")
+# print(f"是否可以直接evaluate? {'✅' if hasattr(loaded_model, 'evaluate') else '❌'}")
+# print(f"是否可以直接compile? {'✅' if hasattr(loaded_model, 'compile') else '❌'}")
+#
+# # 验证 metrics 配置
+# print(f"\n模型metrics列表: {loaded_model.metrics}")
 
 # def get_deployment_model(self):
 #     """获取部署用的SavedModel路径"""
@@ -104,107 +104,106 @@ print(f"\n模型metrics列表: {loaded_model.metrics}")
 #     return result.numpy()
 
 
-
 # def save(self, save_path):
-    #     """保存整个模型（包括配置、窗口、权重、编译配置）"""
-    #     check_is_fitted(self)
-    #     os.makedirs(save_path, exist_ok=True)
-    #
-    #     # 1. 保存模型权重 （TF格式，支持大文件）
-    #     if not hasattr(self, '_prediction_model'):
-    #         self._prediction_model = self.reconstruct_model()
-    #
-    #     # 使用TF格式保存权重（自动分片）
-    #     weights_dir = os.path.join(save_path, 'model_weights')  # 文件夹放很很多文件
-    #     self._prediction_model.save_weights(weights_dir)
-    #
-    #     # 2. 保存架构为Json
-    #     model_json = self._prediction_model.to_json()
-    #     with open(os.path.join(save_path, 'model_architecture.json'), 'w') as f:
-    #         f.write(model_json)
-    #
-    #     # 3. 保存配置信息
-    #     save_configs = {
-    #         'model_config': self.model_config,
-    #         'window_config': {
-    #             'input_width': self.window.input_width,
-    #             'label_width': self.window.label_width,
-    #             'shift': self.window.shift,
-    #             'label_columns': self.window.label_columns,
-    #             'numeric_columns': self.window.numeric_columns,
-    #             'categorical_columns': self.window.categorical_columns,
-    #             'embedding_configs': self.window.embedding_configs,
-    #             'output_configs': self.window.output_configs
-    #         },
-    #         'compile_config': self._get_compile_config_for_save(),  # 确保字典格式
-    #         'tensorflow_version': tf.__version__
-    #     }
-    #
-    #     joblib.dump(save_configs, os.path.join(save_path, 'saved_configs.pkl'))
-    #     logger.debug(f"完整模型已保存到: {save_path}")
-    #     return save_path
+#     """保存整个模型（包括配置、窗口、权重、编译配置）"""
+#     check_is_fitted(self)
+#     os.makedirs(save_path, exist_ok=True)
+#
+#     # 1. 保存模型权重 （TF格式，支持大文件）
+#     if not hasattr(self, '_prediction_model'):
+#         self._prediction_model = self.reconstruct_model()
+#
+#     # 使用TF格式保存权重（自动分片）
+#     weights_dir = os.path.join(save_path, 'model_weights')  # 文件夹放很很多文件
+#     self._prediction_model.save_weights(weights_dir)
+#
+#     # 2. 保存架构为Json
+#     model_json = self._prediction_model.to_json()
+#     with open(os.path.join(save_path, 'model_architecture.json'), 'w') as f:
+#         f.write(model_json)
+#
+#     # 3. 保存配置信息
+#     save_configs = {
+#         'model_config': self.model_config,
+#         'window_config': {
+#             'input_width': self.window.input_width,
+#             'label_width': self.window.label_width,
+#             'shift': self.window.shift,
+#             'label_columns': self.window.label_columns,
+#             'numeric_columns': self.window.numeric_columns,
+#             'categorical_columns': self.window.categorical_columns,
+#             'embedding_configs': self.window.embedding_configs,
+#             'output_configs': self.window.output_configs
+#         },
+#         'compile_config': self._get_compile_config_for_save(),  # 确保字典格式
+#         'tensorflow_version': tf.__version__
+#     }
+#
+#     joblib.dump(save_configs, os.path.join(save_path, 'saved_configs.pkl'))
+#     logger.debug(f"完整模型已保存到: {save_path}")
+#     return save_path
 
-    # @classmethod
-    # def load(cls, save_path):
-    #     """加载分片保存的模型"""
-    #
-    #     # 1. 加载配置
-    #     config_path = os.path.join(save_path, 'saved_configs.pkl')
-    #     if not os.path.exists(config_path):
-    #         raise FileNotFoundError(f"配置文件不存在: {config_path}")
-    #
-    #     saved_configs = joblib.load(config_path)
-    #
-    #     # 2. 创建estimator实例
-    #     estimator = cls(model_config=saved_configs['model_config'])
-    #
-    #     # 3. 重建窗口生成器
-    #     estimator.window = EnhancedWindowGenerator(**saved_configs['window_config'])
-    #
-    #     # 4. 从JSON重建模型结构
-    #     model_json_path = os.path.join(save_path, 'model_architecture.json')
-    #     if not os.path.exists(model_json_path):
-    #         raise FileNotFoundError(f"模型架构文件不存在: {model_json_path}")
-    #
-    #     with open(model_json_path, 'r') as f:
-    #         model_json = f.read()
-    #
-    #     # 处理自定义层(这里没有)
-    #     custom_objects = getattr(cls, 'custom_objects', {})
-    #     estimator.prediction_model_ = tf.keras.models.model_from_json(model_json, custom_objects=custom_objects)
-    #
-    #     # 5. 加载分片权重
-    #     weights_dir = os.path.join(save_path, 'model_weights')
-    #     if not os.path.exists(weights_dir):
-    #         raise FileNotFoundError(f"权重文件不存在: {weights_dir}")
-    #     # 自动加载所有分片
-    #     estimator.prediction_model_.load_weights(weights_dir).expect_partial()  # 宽松模式，允许部分权重不匹配
-    #
-    #     # 6. 1 重建优化器实例（saved_configs['compile_config']里面保存的是字典，不是实例）'optimizer': {'class_name': 'Adam', 'config': {...}},
-    #     compile_config = saved_configs['compile_config']
-    #     optimizer_config = compile_config['optimizer']
-    #     optimizer_class = getattr(tf.keras.optimizers, optimizer_config['class_name'])
-    #     optimizer = optimizer_class.from_config(optimizer_config['config'])
-    #     # 6. 2 提取其他配置
-    #     loss_config = compile_config['loss']
-    #     metrics_config = compile_config['metrics']
-    #     loss_weights_config = compile_config['loss_weights']
-    #
-    #     estimator.prediction_model_.compile(
-    #         optimizer=optimizer,  # 优化器实例
-    #         loss=loss_config,  # 字典
-    #         metrics=metrics_config,  # 字典
-    #         loss_weights=loss_weights_config
-    #     )
-    #
-    #     # 7. 标记为已拟合
-    #     estimator.is_fitted_ = True
-    #
-    #     # training_model_可以为None，因为不需要重新训练
-    #     estimator.training_model_ = None
-    #
-    #     logger.debug(f"模型已从 {save_path} 加载")
-    #     return estimator
+# @classmethod
+# def load(cls, save_path):
+#     """加载分片保存的模型"""
+#
+#     # 1. 加载配置
+#     config_path = os.path.join(save_path, 'saved_configs.pkl')
+#     if not os.path.exists(config_path):
+#         raise FileNotFoundError(f"配置文件不存在: {config_path}")
+#
+#     saved_configs = joblib.load(config_path)
+#
+#     # 2. 创建estimator实例
+#     estimator = cls(model_config=saved_configs['model_config'])
+#
+#     # 3. 重建窗口生成器
+#     estimator.window = EnhancedWindowGenerator(**saved_configs['window_config'])
+#
+#     # 4. 从JSON重建模型结构
+#     model_json_path = os.path.join(save_path, 'model_architecture.json')
+#     if not os.path.exists(model_json_path):
+#         raise FileNotFoundError(f"模型架构文件不存在: {model_json_path}")
+#
+#     with open(model_json_path, 'r') as f:
+#         model_json = f.read()
+#
+#     # 处理自定义层(这里没有)
+#     custom_objects = getattr(cls, 'custom_objects', {})
+#     estimator.prediction_model_ = tf.keras.models.model_from_json(model_json, custom_objects=custom_objects)
+#
+#     # 5. 加载分片权重
+#     weights_dir = os.path.join(save_path, 'model_weights')
+#     if not os.path.exists(weights_dir):
+#         raise FileNotFoundError(f"权重文件不存在: {weights_dir}")
+#     # 自动加载所有分片
+#     estimator.prediction_model_.load_weights(weights_dir).expect_partial()  # 宽松模式，允许部分权重不匹配
+#
+#     # 6. 1 重建优化器实例（saved_configs['compile_config']里面保存的是字典，不是实例）'optimizer': {'class_name': 'Adam', 'config': {...}},
+#     compile_config = saved_configs['compile_config']
+#     optimizer_config = compile_config['optimizer']
+#     optimizer_class = getattr(tf.keras.optimizers, optimizer_config['class_name'])
+#     optimizer = optimizer_class.from_config(optimizer_config['config'])
+#     # 6. 2 提取其他配置
+#     loss_config = compile_config['loss']
+#     metrics_config = compile_config['metrics']
+#     loss_weights_config = compile_config['loss_weights']
+#
+#     estimator.prediction_model_.compile(
+#         optimizer=optimizer,  # 优化器实例
+#         loss=loss_config,  # 字典
+#         metrics=metrics_config,  # 字典
+#         loss_weights=loss_weights_config
+#     )
+#
+#     # 7. 标记为已拟合
+#     estimator.is_fitted_ = True
+#
+#     # training_model_可以为None，因为不需要重新训练
+#     estimator.training_model_ = None
+#
+#     logger.debug(f"模型已从 {save_path} 加载")
+#     return estimator
 
 
 # def save_for_deployment(self, deploy_path):
@@ -290,23 +289,295 @@ print(f"\n模型metrics列表: {loaded_model.metrics}")
 #         config = json.load(f)
 #
 #     return model, config
+# import numpy as np
+#
+#
+# # 创建一个测试数组
+# arr = np.arange(34)  # [0,1,2,...,33]
+#
+# label_start = 29
+# label_width = 5
+#
+# # 方法1：切片
+# labels_slice = arr[label_start:label_start+label_width]  # 29:34
+# print("切片结果:", labels_slice)  # [29,30,31,32,33] ✅
+# labels_slice_ = arr[label_start:]
+# print("切片结果:", labels_slice_)
+#
+# # 方法2：索引列表
+# label_indices = list(range(label_start, label_start+label_width))
+# print("索引列表:", label_indices)  # [29,30,31,32,33] ✅
+#
+# print("是否相等:", list(labels_slice) == label_indices)  # True ✅
+
+
+import numpy as np
+from collections import defaultdict
+
+
+def calculate_mape_with_averaging(predictions, actual_data: pd.DataFrame):
+    """ 单任务处理 包括真实DF
+    正确的方法：对每个时间点的多个预测值取平均，然后计算MAPE
+
+    predictions: 每个窗口的预测结果列表
+                如: [[105, 108, 112],  # 从t0预测t1,t2,t3
+                     [112, 115, 118],  # 从t1预测t2,t3,t4
+                     ...]
+    actuals: 实际值列表 [100, 110, 105, 120, ...]
+    """
+    # 1. 收集每个时间点的所有预测值
+    predictions_by_time = defaultdict(list)
+
+    for window_start, pred_window in enumerate(predictions):
+        for steps_ahead, pred_value in enumerate(pred_window):
+            target_time = window_start + steps_ahead + 1  # 预测的目标时间点
+
+            time_point = historical_timestamps[target_time]
+            if target_time < len(actuals):
+                predictions_by_time[time_point].append(pred_value)  # value是表格
+
+    # 2. 时间点维度的mape
+    avg_timepoint_predictions = {}
+    for time_idx, preds in predictions_by_time.items():
+        avg_timepoint_prediction[time_idx] = np.mean(preds)  # list 列表值的多个一起平均
+
+    res1 = calc_level_mape(avg_timepoint_predictions, actuals)
+
+    # 3. 日级别的Mape
+    avg_day_predictions = {}
+    for time_idx, preds in predictions_by_time.items():
+        day = time_idx.dt.day
+        month = time_idx.dt.month
+        year = time_idx.dt.year
+
+        avg_day_predictions[f'{year}_{month}_{day}'] = np.mean(preds)  # list
+
+    # 处理日级别的真实值  actual_data 单任务的带时间的DF
+    actual_data['date'] = actual_data['Date Time'].dt.strptime(format='%Y_%m_%d')
+    daily_actuals = actual_data.groupby('date').agg({'T': 'mean', 'rh': 'mean'})  # task要定
+
+    res2 = calc_level_mape(avg_daily_predictions, daily_actuals)
+
+
+import pandas as pd
+
+## 示例1：使用字符串时间键
+dates = ['2016-12-31 17:00:00', '2016-12-31 18:00:00', '2016-12-31 19:00:00', '2016-12-31 20:00:00',
+         '2016-12-31 21:00:00', '2016-12-31 22:00:00', '2016-12-31 23:00:00', '2017-01-01 00:00:00']
+
+actuals_dict = {
+    'Date Time': ['2016-12-31 17:00:00', '2016-12-31 18:00:00', '2016-12-31 19:00:00', '2016-12-31 20:00:00',
+                  '2016-12-31 21:00:00', '2016-12-31 22:00:00', '2016-12-31 23:00:00', '2017-01-01 00:00:00'],
+    'T': [1.41, -0.08, -1.03, -1.52, -3.09, -2.59, -3.76, -4.82],
+    'rh': [64.81, 69.81, 70.7, 65.42, 73.7, 71.3, 72.5, 75.7]
+}
+actual = pd.DataFrame(actuals_dict)
+print(actual)
+predictions = [[
+    [3.8703365, 3.884691, 3.4577994, 3.7306015, 2.2956214],
+    [2.6391318, 2.5926297, 2.2178895, 2.5358593, 1.0858217],
+    [1.77491, 1.7106596, 1.1285466, 1.1749766, -0.014756217],
+    [0.88609976, 0.75710475, 0.19265927, 0.11487619, -0.86728024]
+],
+    [[79.67318, 80.484695, 80.43478, 83.38382, 83.45128],
+     [80.5278, 81.90515, 81.87326, 85.21435, 84.81238, ],
+     [81.605484, 83.30215, 83.313484, 86.7817, 86.10873],
+     [83.98053, 85.9154, 85.84884, 89.42158, 88.54782]]
+]
+result = calculate_mape_flexible_keys(predictions, actuals_dict)
+print(f"MAPE: {result['mape']:.2f}%")
+
+# 查看详细结果
+for item in result['results_by_time']:
+    print(f"\n时间: {item['time_key']}")
+    print(f"  实际值: {item['actual']}")
+    print(f"  预测次数: {item['n_predictions']}")
+    print(f"  平均预测: {item['avg_prediction']:.2f}")
+    print(f"  APE: {item['ape']:.2f}%")
+
+    # 查看每个预测的来源
+    for detail in item['pred_details']:
+        print(f"    - 从 {detail['window_start']} 预测 {detail['steps_ahead']} 步: {detail['prediction']}")
+
 import numpy as np
 
+# Python 的 and 运算符工作原理：
+result = a and b
+# 等价于：
+if bool(a):
+    result = b
+else:
+    result = a
 
-# 创建一个测试数组
-arr = np.arange(34)  # [0,1,2,...,33]
+print("标量运算:")
+# 简单规则：
+# 1. 从左到右检查
+# 2. 遇到第一个为假的，就返回它
+# 3. 如果全部为真，返回最后一个
 
-label_start = 29
-label_width = 5
+print(f"3 and 5: {3 and 5}")  # 5（因为 3 为真，返回 5）
+print(f"0 and 5: {0 and 5}")  # 0（因为 0 为假，返回 0）
+print(f"3 and 0: {3 and 0}")  # 0（因为 3 为真，返回 0）
+print(f"False and True: {False and True}")  # False
 
-# 方法1：切片
-labels_slice = arr[label_start:label_start+label_width]  # 29:34
-print("切片结果:", labels_slice)  # [29,30,31,32,33] ✅
-labels_slice_ = arr[label_start:]
-print("切片结果:", labels_slice_)
+print({3 and 4 and 5})  # 5
+print({3 and 4 and 6})  # 6
 
-# 方法2：索引列表
-label_indices = list(range(label_start, label_start+label_width))
-print("索引列表:", label_indices)  # [29,30,31,32,33] ✅
+a = pd.Timestamp('2025-02-02')
+print(pd.Timestamp(a.strftime('%Y-%m')))
+rint(f"分钟: {a.floor('T')}")  # 2025-02-02 14:30:00
 
-print("是否相等:", list(labels_slice) == label_indices)  # True ✅
+import pandas as pd
+import numpy as np
+
+import pandas as pd
+import numpy as np
+
+df = pd.DataFrame({
+    'A': ['foo', 'foo', 'bar', 'bar', 'foo'],
+    'B': [1, 2, 3, np.nan, 5],
+    'C': [6, 7, 8, 9, np.nan]
+})
+
+print(df)
+'''
+     A    B    C
+0  foo  1.0  6.0
+1  foo  2.0  7.0
+2  bar  3.0  8.0
+3  bar  NaN  9.0
+4  foo  5.0  NaN
+'''
+
+# .size() - 统计每个分组的总行数
+size_result = df.groupby('A').size()
+print(size_result)
+'''
+A
+bar    2  # bar组有2行（索引2,3）
+foo    3  # foo组有3行（索引0,1,4）
+'''
+
+count_result = df.groupby('A').count()
+print(count_result)  # B: 1 3
+count_b = df.groupby('A')['B'].count()  # B  1 3
+print(count_b)
+
+import pandas as pd
+import numpy as np
+
+sales = pd.DataFrame({
+    'Region': ['North', 'North', 'South', 'South', 'North'],
+    'Product': ['A', 'B', 'A', 'A', 'B'],
+    'Sales': [100, 150, 200, np.nan, 120],
+    'Profit': [20, 30, 40, 50, np.nan]
+})
+
+total = sales.groupby('Region').size()  # Series: North 3, South 2
+valid = sales.groupby('Region').count()  # DataFrame
+
+print("total:\n", total)
+print("\nvalid:\n", valid)
+print(total.shape)  # (2,)
+print('\n ', valid.shape)  # (2,3)
+
+# 错误示例 认为可以total（2，）可以直接横向广播
+print("\nvalid / total:\n", valid / total)  # 直接 都是nan 列索引变成： North product profit sales South
+
+# 1. 明确指明行索引对齐
+result = valid.div(total, axis=0)  # 列索引：product profit sales
+print(result)
+
+# 2. 将total.values变成 可以横向广播的 列向量（n,1) ->[:,None] 之后才能正常计算
+print("\nvalid / total.values[:None]", valid / total.values[:, None])
+
+# 3. 或者将total.values 变成可以纵向广播的 行向量(1,n) .reshape / [None,:]
+# 再将valid调整成对应形状（3，2） 即可广播
+print("\nvalid / total.values.reshape(1,-1)", valid.T / total.values.reshape(1, -1))  # (3,2) / (1,2)
+
+# 奇怪的转置 也不知道什么理由？
+print("\nvalid / total", valid.T / total)  # (3,2) / (2,)
+
+import numpy as np
+import pandas as pd
+
+# 创建示例datetime数组
+timepoints = np.array([
+    '2023-01-15T10:30:00',
+    '2023-01-15T14:45:00',
+    '2023-02-20T09:15:00',
+    '2023-02-20T16:20:00',
+    '2024-03-10T11:00:00'
+], dtype='datetime64[s]')  # 秒精度
+
+# 1. 提取到日（您已经会的）只有array 可以astype,如果仅仅是series，还要用values转换
+dates = timepoints.astype('datetime64[D]')  # YYYY-MM-DD
+# 2. 提取到月
+months = timepoints.astype('datetime64[M]')  # YYYY-MM
+# 3. 提取到年
+years = timepoints.astype('datetime64[Y]')  # YYYY
+
+# 4. 提取到周（ISO周数，更复杂）
+# numpy没有直接的周提取，需要pandas
+weeks = pd.to_datetime(timepoints).isocalendar().year.astype('str') + '-W' + \
+        pd.to_datetime(timepoints).isocalendar().week.astype('str').str.zfill(2)
+# 2023-01-15 10:30:00    2023-W02（+ 文本和文本拼，列表和列表拼）
+
+# 5. 提取到季度
+quarters = pd.to_datetime(timepoints).to_period('Q')  # PeriodIndex(['2023Q1',
+# 6. 提取到小时
+hours = timepoints.astype('datetime64[h]')  # YYYY-MM-DD hh  '2023-01-15T10'
+
+# 7. 更灵活的方法：使用pandas的dt访问器
+timepoints_pd = pd.to_datetime(timepoints)
+
+print("使用pandas提取各种粒度:")
+print(f"年: {timepoints_pd.year.values}")  # 已经是to_datetime()可以直接用.year 不用.dt.year
+print(f"月: {timepoints_pd.month.values}")
+print(f"日: {timepoints_pd.day.values}")
+print(f"小时: {timepoints_pd.hour.values}")
+print(f"分钟: {timepoints_pd.minute.values}")
+print(f"周几(0-6): {timepoints_pd.dayofweek.values}")
+print(f"一年中的第几天: {timepoints_pd.dayofyear.values}")
+print(f"一年中的第几周: {timepoints_pd.isocalendar().week.values}")
+
+arr = np.array(['2023-01-15 10:30:00', '2023-01-15 10:40:00'])
+a = pd.to_datetime(arr)
+# 数组操作
+b = a.values
+c = a[0]
+
+print(b.astype('datetime64[D]'))
+# pandas操作
+print(a.floor('D'))  # 向下取整到日
+print(a.normalize())  # 归一化到日（去掉时分秒）
+print(a.date)  # 提取日期部分（返回datetime.date对象）不用再.dt.date
+
+import pandas as pd
+import numpy as np
+
+# 创建测试数据
+np.random.seed(42)
+n = 50
+timepoints = pd.date_range('2023-01-01', periods=n, freq='h')
+pairs_df = pd.DataFrame({
+    'timepoint': timepoints,
+    'abs_error': np.random.exponential(scale=10, size=n),
+    'squared_error': np.random.exponential(scale=100, size=n)
+})
+
+# 提取日级别
+pairs_df['level'] = pairs_df['timepoint'].dt.floor('D')
+
+# 使用
+daily_stats = pairs_df.groupby('level').agg(
+    mae=('abs_error', 'mean'),
+    mse=('squared_error', lambda x: {
+        'mean': x.mean(),
+        'std': x.std(),
+        'rmse': np.sqrt(x.mean())
+    })
+)
+
+print("结果:")
+print(daily_stats.head())
