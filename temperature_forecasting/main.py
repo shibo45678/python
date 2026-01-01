@@ -147,7 +147,10 @@ def main():
 
     # 3. 检查预测数据集时间列的连续性（时间列智能检测并转换 + 时间序列缺失情况） Date Time
     time_detector = ProcessTimeseriesColumns(interactive=False, create_extract_continuous=True)
-    valid_df_test, _ = time_detector.learn_process(df_test, y=None)
+    df_test, _ = time_detector.learn_process(df_test, y=None)
+
+    sampler = SimpleTimeSampler(time_column='Date Time', freq_hours=1, minute=0, second=0)
+    valid_df_test,_=sampler.learn_process(df_test,y=None)
     time_col = time_detector.valid_time_column_
 
     # 4. 数据预处理(生成训练、验证、预测数据）
@@ -287,15 +290,16 @@ def main():
             features_temp_data_copy = copy.deepcopy(data)
             raw_predictions = model.predict(features_temp_data_copy)  # 测试数据
             logger.info(
-                f"测试集生成 {len(raw_predictions)} 个预测结果，每个结果代表一个预测label，形状：shape:{raw_predictions[0].shape}")
+                f"测试集生成 {len(raw_predictions)} 个预测结果，每个结果代表一个预测label，形状：shape:{raw_predictions[list(config.get('output_config').keys())[0]].shape}")
 
-            # 5. 逆转换（使用后处理器）预测数据 + 原始数据
+            # 5. 逆转换（使用后处理器）预测数据 + 原始数据（用于训练的数值列里面的2分类列，未标准化，需要排除掉）
             inverse_predictions = postprocessor.custom_inverse_transform(
                 raw_predictions=raw_predictions,
-                use_saved=False,  # 使用【内存】中的preprocessor
+                use_saved=True,  # 使用【内存】中的preprocessor
+                task_config= config.get('output_config'),
+                output_width=config.get('output_width'),
                 pipeline_name='pipeline_4',
-                step_names=['engineer_3', 'engineer_4'],
-                target_columns=list(config.get('output_config').keys()))
+                step_names=['engineer_3', 'engineer_4'])
 
             # 6. 添加时间戳
             final_pred_results,predictions_dict = postprocessor.add_timestamps(
@@ -318,10 +322,13 @@ def main():
                     pred_data=final_pred_results,
                     original_data=no_scaled_data.copy(),
                 )
+                logger.debug(f"预测结果和原数据合并表：{step_mape.tail(10)}")
 
                 # 逐时间点timepoint / 各级别 mape mse mae
                 mape_dict = MetricsCalculator.calc_hierarchical_metrics(predictions=predictions_dict,
                                                                         actual_data=no_scaled_data.copy(),
+                                                                        input_width =config.get('input_width'),
+                                                                        shift =config.get('shift'),
                                                                         level='o')  # 原始时间点维度
                 logger.debug(f"mape_dict含有的任务：{mape_dict.keys}")
 

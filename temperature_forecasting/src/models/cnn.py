@@ -422,7 +422,7 @@ class MultiTasksCnnModel(CnnModel):
         x = x[:, :output_width, :]  # 裁剪到5个时间步 (32, 5, 2)
 
         # 多任务输出层
-        outputs = []
+        outputs = {}
         loss_dict = {}
         metric_dict = {}
 
@@ -475,7 +475,7 @@ class MultiTasksCnnModel(CnnModel):
                 loss_dict[output_name] = config.get('loss', 'mse')
                 metric_dict[output_name] = config.get('metrics', ['mae'])
 
-            outputs.append(output_layer)
+            outputs[output_name]=output_layer
 
         all_inputs = [numeric_input] + categorical_inputs  # 无分类数据时：[] ,有分类时：字典
         model = tf.keras.Model(inputs=all_inputs, outputs=outputs)

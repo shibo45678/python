@@ -66,9 +66,9 @@ class ModelEvaluation:
         """
 
         # 绘制预测效果
-        if hasattr(window, 'window_plot'):
+        if hasattr(window, 'enhanced_window_plot'):
             window.enhanced_window_plot(model=model, model_name=self.model_name, dataset=dataset,
-                                        save_path='~/Python/NeuralNetwork/temperature_forecasting/data/pics/')  # 使用已训练好的模型，拿训练集的example直接预测看结果
+                                        save_path='~/Python/NeuralNetwork/temperature_forecasting/data/pics')  # 使用已训练好的模型，拿训练集的example直接预测看结果
 
         # 评估模型
         # 分别适配多任务和单任务
@@ -108,13 +108,13 @@ class ModelEvaluation:
 
         # 获取一批数据进行详细分析
         inputs, true_labels = next(iter(dataset))  # (tuple ,dict)
-        predictions = model.predict(inputs, verbose=0)  # list
+        predictions = model.predict(inputs, verbose=0)  # dict
 
         logger.debug(f"=== {self.model_name} - {dataset_type} 详细分析 ===")
         task_results = {}
 
-        # 多输出模型：predictions是list
-        if isinstance(predictions, (tuple, list)):
+        # 多输出模型：predictions是dict
+        if isinstance(predictions, (tuple, dict)):
             if isinstance(inputs, tuple):
                 logger.debug(
                     f"inputs的数值特征 (batch_size, sequence_length, total_features): {inputs[0].shape}")  # 分类特征不一定有，所以不写 (batch_size, sequence_length, total_features)
@@ -126,7 +126,7 @@ class ModelEvaluation:
 
             for i, (task_name, config) in enumerate(self.output_configs.items()):
                 if i < len(predictions):
-                    pred = predictions[i]  # 第i个输出层的预测
+                    pred = predictions[task_name]   # 第i个输出层的预测
                     true = true_labels[task_name]  # 根据key提取对应value
                     task_results[task_name] = self._analyze_single_task(pred, true, config, task_name)
 
@@ -227,12 +227,12 @@ class ModelEvaluation:
         """分析多分类任务"""
 
         pred_probs = predictions
-        pred_classes = np.argmax(predictions, axis=-1)  # (batch,)
+        pred_classes = np.argmax(predictions, axis=-1)  # (batch,) batch_size, output_width
         # np.argmax() 返回数组中最大值的索引 ,每个样本中最大概率的索引
-        # 样本1: max(0.1, 0.8, 0.1) = 0.8 → 索引1
+        # 样本1: max(0.1, 0.8, 0.1) = 0.8 → 索引1 _>缩成数值类似格式
         # 样本2: max(0.7, 0.2, 0.1) = 0.7 → 索引0
 
-        true_classes = tf.squeeze(true_values).astype(int)  # (batch, 1, 1) 移除数组中维度为1的轴。
+        true_classes = tf.squeeze(true_values).astype(int)  # (batch, 1, 1) 移除数组中维度为1的轴。 (32,5)
         accuracy = np.mean(pred_classes == true_classes)  # 变成同样的1维数组比较
 
         logger.debug(f"-----{task_name}-----")

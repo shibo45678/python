@@ -313,7 +313,7 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
             x = tf.keras.layers.Dropout(0.2)(x)
 
         # 多任务输出（每个单独一层）
-        outputs = []
+        outputs =   {}
         loss_dict = {}
         metric_dict = {}
         loss_weights = {}
@@ -330,7 +330,7 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
             if config['type'] == 'regression':
                 output_layer = tf.keras.layers.Dense(output_width * output_dim,
                                                      name=f'dense_{output_name}')(x)
-                output_layer = tf.keras.layers.Reshape((output_width,output_dim),
+                output_layer = tf.keras.layers.Reshape((output_width, output_dim),
                                                        name=f'reshape_{output_name}')(output_layer)
                 output_layer = tf.keras.layers.Activation('linear', name=output_name)(output_layer)
 
@@ -372,7 +372,7 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
                 metric_dict[output_name] = config.get('metrics', ['mae'])
                 loss_weights[output_name] = config.get('loss_weights', 1)
 
-            outputs.append(output_layer)
+            outputs[output_name] = output_layer
 
         all_inputs = [numeric_input] + categorical_inputs  # 无分类数据时：[] ,有分类时：字典
 
