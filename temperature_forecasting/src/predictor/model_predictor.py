@@ -1,45 +1,108 @@
+import json
 import os
+import cloudpickle
+import logging
+
+logger = logging.getLogger(__name__)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0=全部显示, 1=隐藏INFO, 2=隐藏WARNING, 3=隐藏ERROR
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # 关键：禁用 Keras 3 的自动检测
 import tensorflow as tf
 
+
 class TrainedModelPredictor:
-    """专门用于预测的类，不依赖训练状态"""
+    """专门用于预测的类，不依赖训练状态 """
 
-    def __init__(self,checkpoint_path):
+    def __init__(self, deployment_package_path: str):
+        self.deployment_path = deployment_package_path
         self.model = None
-        self.checkpoint_path = checkpoint_path
+        self.preprocessor = None
+        self.postprocessor = None
+        self.window_generator = None
+        self.config = None
 
-        if checkpoint_path:
-            self.load_model()
+    def load(self):
+        """加载所有组件 使用 TensorFlow SavedModel"""
+        # 1. 加载配置
+        config_path = os.path.join(self.deployment_path, 'deployment_config.json')
+        with open(config_path, 'r') as f:
+            self.config = json.load(f)
 
-    def load_model(self, checkpoint_path=None):
-        """加载模型"""
+        # 2. 加载 预处理器
+        preprocessor_path = os.path.join(self.deployment_path, 'preprocessor.cpkl')
+        with open(preprocessor_path, 'rb') as f:
+            self.preprocessor = cloudpickle.load(f)
 
-        if checkpoint_path is None:
-            checkpoint_path = self.checkpoint_path
+        # 3. 加载模型
+        model_path = os.path.join(self.deployment_path, 'saved_model')
+        self.model = tf.saved_model.load(model_path)
+        logger.info(f"已加载 TensorFlow SavedModel")
 
-        if checkpoint_path is None:
-            raise ValueError("未指定检查点路径")
-
-        # 查找并加载模型文件
-        if os.path.isdir(checkpoint_path):
-            # 在目录中查找模型文件
-            for file in os.listdir(checkpoint_path):
-                if file.endswith(('.keras', '.h5')):
-                    model_path = os.path.join(checkpoint_path, file)
-                    self.model = tf.keras.models.load_model(model_path)
-                    self.checkpoint_path = model_path
-                    return self.model
-            raise FileNotFoundError(f"在目录中找不到模型文件: {checkpoint_path}")
+        if hasattr(self.model, 'signatures'):
+            self.serving_fn = self.model.signatures['serving_default']
         else:
-            # 直接加载文件
-            self.model = tf.keras.models.load_model(checkpoint_path)
-            return self.model
+            self.serving_fn = self.model
 
-    def predict(self, new_data):
-        """进行预测"""
-        if self.model is None:
-            self.load_model()
-        return self.model.predict(new_data)
+        # 4. 加载窗口生成器
+        window_gen_path = os.path.join(self.deployment_path, 'window_generator.cpkl')
+        if os.path.exists(window_gen_path):
+            with open(window_gen_path, 'rb') as f:
+                self.window_generator = cloudpickle.load(f)
+                logger.info("已加载窗口生成器")
+        else:
+            raise FileNotFoundError("缺少 window_generator.cpkl")
 
+        # 5. 加载后处理器
+        postprocessor_path = os.path.join(self.deployment_path, 'postprocessor.cpkl')
+        if os.path.exists(postprocessor_path):
+            with open(postprocessor_path, 'rb') as f:
+                self.postprocessor = cloudpickle.load(f)
 
+        return self
+
+    def forecast(self, new_features, labels=None):
+
+        processed_data, _ = self.preprocessor.transform_predict(features=new_features, labels=None)
+
+        # 处理时间列
+        datetime_cols = processed_data.select_dtypes(include=['datetime64']).columns
+        input_cols_ = [col for col in list(processed_data.columns) if col not in datetime_cols]
+        processed_data_ = processed_data[input_cols_]
+
+        window_data = self.window_generator.createDataset(processed_data_)  # 全部数值列
+
+        # 使用TensorFlow SavedModel预测 ，而不是predict
+        # SavedModel 的签名期望的是 Tensor，不是 Dataset，所以需要从 Dataset 中提取 Tensor
+        # Keras 的predict可以接受Dataset
+        numeric_input = None
+
+        for batch in window_data.take(1):
+
+            if isinstance(batch, tuple):
+                numeric_input = batch[0]
+            else:
+                numeric_input = batch
+            break
+
+        print(f"提取的 numeric_input 形状: {numeric_input.shape}")
+        raw_outputs = self.serving_fn(numeric_input=numeric_input)
+
+        return self._process_multi_output(raw_outputs)
+
+    def _process_multi_output(self, raw_outputs):
+
+        task_config = self.config.get('model_config').get('output_config')
+        output_width = self.config.get('model_config').get('output_width')
+        pipeline_name = 'pipeline_4'
+        step_names = ['engineer_3', 'engineer_4']
+
+        # SavedModel 通常返回字典，如 {'output_0': tensor, 'output_1': tensor}
+        numpy_pred = None
+        if isinstance(raw_outputs, dict):
+            if self.postprocessor:
+                numpy_pred = self.postprocessor.custom_inverse_transform(raw_predictions=raw_outputs, use_saved=False,
+                                                                         task_config=task_config,
+                                                                         output_width=output_width,
+                                                                         pipeline_name=pipeline_name,
+                                                                         step_names=step_names)
+
+        return numpy_pred

@@ -38,7 +38,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="/Users/shibo/Python/pythonProject1/tf_venv"
+VIRTUAL_ENV="/Users/shibo/Python/NeuralNetwork/tf_venv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"

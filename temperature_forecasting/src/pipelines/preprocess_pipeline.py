@@ -1,17 +1,17 @@
-import copy
-import os
 import warnings
 from typing import List, Dict, Union
 
 import numpy as np
 import pandas as pd
 import pytest
-from joblib import Memory
+# from joblib import Memory
 from pydantic import BaseModel, field_validator, model_validator, Field
 from sklearn.pipeline import Pipeline
 import logging
+
+from data import BaseCleaner
 from data.data_preparation.remove_duplicates import RemoveDuplicates
-from data.feature_engineering import UnifiedFeatureScaler, CategoricalEncoding
+from data.feature_engineering import UnifiedFeatureScaler
 
 logger = logging.getLogger(__name__)
 
@@ -126,9 +126,10 @@ class ProcessorConfigs(BaseModel):
 
 
 # 协调器
-class CompletePreprocessor:
+class CompletePreprocessor(BaseCleaner):
 
     def __init__(self, processor_configs: Union[List[Dict], ProcessorConfigs]):
+        super().__init__(name='CompletePreprocessor')
         self.processor_configs = processor_configs
         self.pipelines_ = {}
         self.validate_processor_configs_ = self._get_processor_configs()
@@ -167,13 +168,13 @@ class CompletePreprocessor:
                 for i, cleaner in enumerate(class_obj_list):
                     old = len(features_temp)
                     features_temp, labels_temp = cleaner.learn_process(features_temp, labels_temp)
+                    self._add_step(idx, i, cleaner)  # 多次 只留最后一个数据集的cleaner
                     new = len(features_temp)
 
                     # 保存处理类信息和初始化参数（用于后续创建新实例）
                     processor_info = {
                         'class': type(cleaner),
-                        'init_params': getattr(cleaner, '_init_params', {}),  # 如果有初始化参数
-                        # 'trained_state': getattr(cleaner, 'get_state', lambda: {})(),  # 获取训练状态（暂无用，兜底lambda）
+                        'instance': cleaner
                     }
 
                     processor_info_list.append(processor_info)
@@ -192,7 +193,7 @@ class CompletePreprocessor:
 
                 steps = [(f'engineer_{i}', engineer) for i, engineer in enumerate(class_obj_list)]
 
-                pipeline = Pipeline(steps) # ,memory=memory
+                pipeline = Pipeline(steps)  # ,memory=memory
 
                 old = features_temp.shape
                 features_temp = pipeline.fit_transform(features_temp, labels_temp)
@@ -209,7 +210,6 @@ class CompletePreprocessor:
                         logger.info(f"  {step_name}: 类别数 = {len(transformer.classes_)}")
 
                 self.pipelines_[f'pipeline_{idx}'] = pipeline
-
 
                 logger.info(
                     f"stage{idx}完成: 生成 pipeline，sklearn pipeline不改变数据形状。数据形状:{old} -> {new}")
@@ -235,11 +235,11 @@ class CompletePreprocessor:
 
             if change:
                 # 使用新的cleaners实例进行转换
-                cleaners_info_list = self.processor_classes_.get(f'cleaner_{idx}',[])
+                cleaners_info_list = self.processor_classes_.get(f'cleaner_{idx}', [])
                 for cleaner in cleaners_info_list:
                     # 获取该类新实例
                     cleaner_class = cleaner.get('class')
-                    cleaner_init_params = cleaner.get('init_params',{})
+                    cleaner_init_params = cleaner.get('init_params', {})
 
                     new_cleaner = cleaner_class(**cleaner_init_params)
                     features_temp, labels_temp = new_cleaner.learn_process(features_temp, labels_temp)
@@ -284,6 +284,13 @@ class CompletePreprocessor:
             warnings.warn(f"获取属性失败: {e}")
             return None
 
+    def get_specific_step(self, idx, step_name):
+        try:
+            return self.pipelines_.get(f'pipeline_{idx}').named_steps[step_name]
+        except(KeyError) as e:
+            warnings.warn(f"获取pipeline步骤失败: {e}")
+            return None
+
 
 def test_completepreprocessor():
     np.random.seed(42)
@@ -293,7 +300,7 @@ def test_completepreprocessor():
     labels = pd.Series([0, 1, 1, 1, 1, 3, 6, 7, 8])
 
     new_data = pd.DataFrame({'feature1': [2, 1, 1, 2, 3],
-                             'feature2':['a','b','b','c','d']})
+                             'feature2': ['a', 'b', 'b', 'c', 'd']})
     new_labels = pd.Series([0, 1, 1, 1, 1])
 
     config = {
@@ -302,11 +309,11 @@ def test_completepreprocessor():
 
     configs2 = [{'obj_list': [RemoveDuplicates()], 'len_change': True},
                 {'obj_list': [UnifiedFeatureScaler(method_config=config, algorithm='cnn'),
-                              ], # CategoricalEncoding(handle_unknown='ignore', unknown_token='__UNKNOWN__')
+                              ],  # CategoricalEncoding(handle_unknown='ignore', unknown_token='__UNKNOWN__')
                  'len_change': False}]
 
     obj = CompletePreprocessor(configs2)
-    result=obj.train(raw_data, labels)
+    result = obj.train(raw_data, labels)
     new_result = obj.transform_predict(new_data, new_labels)
 
     logger.debug("转换的训练数据应该：")
@@ -315,7 +322,6 @@ def test_completepreprocessor():
 
     logger.debug("转换的新数据不应该为空：")
     assert new_result is not None
-
 
     logger.debug("转换的新数据应该要能去重：")
     with pytest.raises(ValueError):

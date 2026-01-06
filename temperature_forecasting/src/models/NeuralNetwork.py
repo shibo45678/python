@@ -1,14 +1,13 @@
-import json
+
+import cloudpickle
 import pickle
 import warnings
 from collections import defaultdict
 from datetime import datetime
 import os
 from pathlib import Path
-from typing import Dict, Any, List, Union
+from typing import Dict, Any, List
 import re
-import joblib
-import shutil
 
 import numpy as np
 from pydantic.v1 import validate_arguments
@@ -58,6 +57,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.input_cols_ = None  # 处理掉时间列，保证进入模型的所有列是数值
         self.forecast_window_gen_ = None
         self.train_window_gen_ = None
+        self.forecast_window_config_ = None
 
         import datetime
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -82,7 +82,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                                                                   )
 
         # 1.2 处理窗口数据
-        self.train_window_gen_ = self._train_window_generator(self.embedding_info, self.model_config['output_config'])
+        self.train_window_gen_ = self._train_window_generator(self.model_config['output_config'])
         train_window_data = self.train_window_gen_.createDataset(train_datasets_)
         val_window_data = self.train_window_gen_.createDataset(val_datasets_)
 
@@ -147,7 +147,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
     @validate_input(validate_y=False)
     def predict(self, X):
-        check_is_fitted(self)
+        check_is_fitted(self, 'is_fitted_')
 
         X_ = pd.DataFrame(X) if not isinstance(X, pd.DataFrame) else X.copy()
         X_model = X_[self.input_cols_]
@@ -163,15 +163,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         predictions = self._prediction_model.predict(predict_window_data)  # 多输入和输出（tuple,dict）->预测结果是list
 
         return predictions
-
-    def forecast(self, latest_data):
-        """真正预测未来：使用forecast_window_gen"""
-        self.forecast_window_gen_ = self._forecast_window_generator(self.embedding_info)
-        forecast_window_data = self.forecast_window_gen_.createDataset(latest_data)
-        if self.prediction_model_ is None:
-            self._prediction_model = self.load_best_model()
-        # 要能部署的加载 load_for_production
-        return self._prediction_model.predict(forecast_window_data)
 
     def load_best_model(self):
         """重构用于预测的干净模型"""
@@ -218,7 +209,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         if hasattr(self, '_prediction_model'):
             del self._prediction_model
 
-    def _train_window_generator(self, embedding_info, output_config):
+    def _train_window_generator(self, output_config):
 
         train_window_gen = EnhancedWindowGenerator(
             mode='train',
@@ -228,24 +219,33 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             label_columns=list(self.model_config['output_config'].keys()),
             numeric_columns=self.model_config['numeric_columns'],
             categorical_columns=self.model_config['categorical_columns'],
-            embedding_configs=embedding_info,
+            embedding_configs=self.embedding_info_,
             output_configs=output_config
         )
 
         return train_window_gen
 
-    def _forecast_window_generator(self, embedding_info):
+    def _forecast_window_generator(self):
 
-        predict_window_gen = EnhancedWindowGenerator(
+        self.predict_window_gen = EnhancedWindowGenerator(
             mode='forecast',
             input_width=self.model_config['input_width'],
             # 预测模式不需要label_width和shift
             numeric_columns=self.model_config['numeric_columns'],
             categorical_columns=self.model_config.get('categorical_columns'),
-            embedding_configs=embedding_info,
+            embedding_configs=self.embedding_info_,
         )
 
-        return predict_window_gen
+        self.forecast_window_config_ = {
+            'mode': 'forecast',
+            'input_width': self.model_config['input_width'],
+            'numeric_columns': self.model_config['numeric_columns'],
+            'categorical_columns': self.model_config.get('categorical_columns'),
+            'embedding_configs': self.embedding_info_,
+
+        }
+
+        return self.predict_window_gen, self.forecast_window_config_
 
     def _compile_for_prediction_model(self, model):  # 同一Python进程中直接获取实例。独立的演化路径
         """为预测模型重新编译 多输出会折叠metrics会折叠"""
@@ -350,10 +350,8 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         if hasattr(self, 'weights_path') and os.path.exists(self.weights_path):
             self.prediction_model_ = self.load_best_model()
-            self.train_window_gen_ = self._train_window_generator(self.embedding_info,
-                                                                  self.model_config['output_config'])
+            self.train_window_gen_ = self._train_window_generator(self.model_config['output_config'])
 
-    # def save_for_production(self,save_path):
 
 class EmbeddingConfig:
     """Embedding维度选择配置"""
@@ -506,9 +504,6 @@ class TimeSeriesPostProcessor:
     def capture_and_save_pipeline_state(self):
         """
         捕获并立即序列化保存pipeline状态
-        Args:
-            preprocessor: 预处理器对象
-            save_dir: 保存目录（如果为None，仅保存在内存中）...
         """
         # 1. 保存临时引用
         self._temp_preprocessor = self.config.get('preprocessor', None)
@@ -521,20 +516,39 @@ class TimeSeriesPostProcessor:
 
                 for step_name, transformer in pipeline.named_steps.items():
                     try:
-                        serialized = pickle.dumps(transformer)
+                        serialized = cloudpickle.dumps(transformer)
                         serialized_states[pipe_name][step_name] = {
                             'pickled': serialized,
                             'type': type(transformer).__name__,
+                            'pickle_type': 'cloudpickle',
                             'params': transformer.get_params() if hasattr(transformer, 'get_params') else {}
                         }
+                        logger.info(f"成功使用 cloudpickle 序列化 {pipe_name}.{step_name}")
+
                     except Exception as e:
-                        logger.info(f"警告：无法pickle{pipe_name}.{step_name}:{e}")
-                        # 如果pickle失败，只保存关键属性
-                        serialized_states[pipe_name][step_name] = {
-                            'pickled': None,
-                            'type': type(transformer).__name__,
-                            'attributes': self._extract_critical_attributes(transformer)
-                        }
+                        logger.info(f"cloudpickle 序列化失败{pipe_name}.{step_name}:{e}")
+
+                        # 尝试 fallback 到标准 pickle
+                        try:
+                            import pickle
+                            serialized = pickle.dumps(transformer)
+                            serialized_states[pipe_name][step_name] = {
+                                'pickled': serialized,
+                                'type': type(transformer).__name__,
+                                'pickle_type': 'pickle',  # 标记使用的序列化方式
+                                'params': transformer.get_params() if hasattr(transformer, 'get_params') else {}
+                            }
+                            logger.info(f"fallback: 使用标准 pickle 序列化 {pipe_name}.{step_name}")
+
+                        except Exception as e2:
+                            logger.error(f"所有序列化方法都失败 {pipe_name}.{step_name}: {e2}")
+
+                            # 如果pickle失败，只保存关键属性
+                            serialized_states[pipe_name][step_name] = {
+                                'pickled': None,
+                                'type': type(transformer).__name__,
+                                'attributes': self._extract_critical_attributes(transformer)
+                            }
             self.serialized_states = serialized_states
 
             # 3. 如果指定了保存目录，立即写入磁盘
@@ -569,7 +583,7 @@ class TimeSeriesPostProcessor:
         logger.info(f"Pipeline状态已保存到: {state_file}")
         return save_data
 
-    def custom_inverse_transform(self, raw_predictions: Dict, use_saved, task_config, output_width, **kwargs):
+    def custom_inverse_transform(self, raw_predictions: Dict, task_config, use_saved,output_width, **kwargs):
         """
         智能逆转换：根据情况选择使用内存引用或保存的状态
         支持多预测的逆转换
@@ -591,6 +605,9 @@ class TimeSeriesPostProcessor:
         processed_tasks = {}
 
         for task_name, task_pred in raw_predictions.items():
+            if isinstance(task_pred, tf.Tensor):
+                task_pred = task_pred.numpy()
+
             logger.debug(f"[INFO] 任务{task_name}原始形状: {task_pred.shape}")
             task_type = task_config.get(task_name).get('type', 'regression')
 
@@ -609,7 +626,7 @@ class TimeSeriesPostProcessor:
             if output_width > 1:
                 if task_type in ['regression', 'binary_classification']:
                     if task_pred.shape[-1] == 1:  # 去除冗余的最后一个维度(samples, output_width,1)
-                        task_pred = task_pred.squeeze(-1)
+                        task_pred = np.squeeze(task_pred,axis =-1)
                         logger.debug(f"[INFO] regression任务{task_name}去除冗余后: {task_pred.shape}")
 
             if not use_saved and hasattr(self, '_temp_preprocessor'):
@@ -823,36 +840,7 @@ class TimeSeriesPostProcessor:
 
         return results_df, predictions
 
-    # @staticmethod
-    # def handle_predictions(predictions:Dict, task_names: List = None):
-    #
-    #     predictions_dict = {}
-    #     if isinstance(predictions, list):  # 多任务
-    #         for i, pred in enumerate(predictions):
-    #             if task_names[i]:
-    #                 task_name = task_names[i] if i < len(task_names) else f'task_{i}'
-    #             else:
-    #                 logger.info(f"task_names长度与任务个数不匹配")
-    #                 task_name = f'task_{i}'
-    #             predictions_dict[task_name] = pred
-    #
-    #     elif predictions.ndim == 3:  # 单输出但多步：最后一个维度是任务维度(多分类) 待确认
-    #         num_tasks = predictions.shape[2]
-    #         for i in range(num_tasks):
-    #             if task_names[i]:
-    #                 task_name = task_names[i] if i < len(task_names) else f'task_{i}'
-    #             else:
-    #                 logger.info(f"task_names长度与任务个数不匹配")
-    #                 task_name = f'task_{i}'
-    #             predictions_dict[task_name] = predictions[:, :, i]
-    #     else:
-    #         # 其他格式 单任务输出
-    #         if len(task_names) > 0:
-    #             predictions_dict[task_names[0]] = predictions
-    #         else:
-    #             predictions_dict['prediciton'] = predictions
-    #
-    #     return predictions_dict
+
 
     def calculate_mape(self, pred_data: pd.DataFrame, original_data: pd.DataFrame):
 
@@ -917,8 +905,7 @@ class MetricsCalculator:
         for tk in task_names:
             mask = data[tk].notna() & (data[tk] != 0)
             data[f'ape_{tk}'] = np.nan
-            data.loc[mask, f'ape_{tk}'] = round(
-                np.abs(data.loc[mask, f'{tk}_pred'] - data.loc[mask, tk]) / np.abs(data.loc[mask, tk]) *100 , 4)
+            data.loc[mask, f'ape_{tk}'] = np.round(np.abs(data.loc[mask, f'{tk}_pred'] - data.loc[mask, tk]) / np.abs(data.loc[mask, tk]) * 100, 4)
 
         return data
 
@@ -941,6 +928,7 @@ class MetricsCalculator:
         predictions ： 需要经过逆转换处理 {task_name: predictions}的格式 ,每个任务有滑动窗口按需处理
         actual_data：原始的数据取对应的时间列 + 任务列，
         level: ‘D’ 代表 日级别 ,‘O' 单时间点级别，‘M’月级别
+        shift:预测偏移
 
         某1个任务的示例：
         predictions: 每个窗口的预测结果列表 （数字是对应着输出结果timepoint的索引位置，理解 target_time ）
@@ -983,7 +971,6 @@ class MetricsCalculator:
             MAE, MSE, RMSE, pairs, mae_mse_ = MetricsCalculator._calc_hierarchical_mae_mse(predictions_by_time,
                                                                                            actual_data,
                                                                                            level, tk)
-            logger.info(mae_mse_.head(10))
             logger.info(f'整体数据的MAE：{MAE},MSE:{MSE},RMSE:{RMSE}')
 
             result[tk].update({'mae_mse': mae_mse_, 'pairs_mse_mae': pairs})
@@ -1139,7 +1126,7 @@ class MetricsCalculator:
 
         avg_pred = handled_pred.iloc[:, 0].values
 
-        actual = handled_actual.values[-len(avg_pred):] # 截掉开头非预测时间点
+        actual = handled_actual.values[-len(avg_pred):]  # 截掉开头非预测时间点
 
         detailed_results['timestamp'] = handled_pred.index
         detailed_results['actual'] = actual
@@ -1171,23 +1158,33 @@ class MetricsCalculator:
         weaknesses = {}
 
         # 系统性错误评估(ape)
+        # details = details.copy()
+        # details['timestamp'] = pd.to_datetime(details['timestamp'],errors='coerce')
+        # details = details.dropna(subset=['timestamp'])
+
         high_mask = details['level_ape'] >= 50
+
         if high_mask.any():
-            outliers = details[high_mask]
+            outliers = details[high_mask].copy()
 
-            patterns = {
-                'count': high_mask.sum(),
-                'error_rate': f'{high_mask.mean():.4f}',
-                'high_error_hours': outliers.groupby(outliers['timestamp'].dt.hour).size(),
-                # 必须保证level为'o';outliers里没有nan 直接总行数即可;
-                'high_error_month': outliers.groupby(outliers['timestamp'].dt.month).size(),
-                'high_error_year': outliers.groupby(outliers['timestamp'].dt.year).size(),
+            if not outliers.empty:
+                hour_counts = outliers['timestamp'].apply(lambda x: x.hour).value_counts().to_dict()
+                month_counts = outliers['timestamp'].apply(lambda x:x.month).value_counts().to_dict()
+                year_counts = outliers['timestamp'].apply(lambda x:x.year).value_counts().to_dict()
 
-                'actual_range': {
-                    'min_actual_in_outliers': outliers['actual'].min(),
-                    'max_actual_in_outliers': outliers['actual'].max(),
-                    'mean_actual_in_outliers': outliers['actual'].mean(),
-                }}
+                patterns = {
+                    'count': int(high_mask.sum()),
+                    'error_rate': f'{high_mask.mean():.4f}',
+                    'high_error_hours': hour_counts,
+                    # 必须保证level为'o';outliers里没有nan 直接总行数即可;
+                    'high_error_month': month_counts,
+                    'high_error_year': year_counts,
+
+                    'actual_range': {
+                        'min_actual_in_outliers': outliers['actual'].min(),
+                        'max_actual_in_outliers': outliers['actual'].max(),
+                        'mean_actual_in_outliers': outliers['actual'].mean(),
+                    }}
 
             # 连续错误(ape)
             consecutive_errors = []
@@ -1207,7 +1204,7 @@ class MetricsCalculator:
                              'duration_hours': f"{(timestamps[end] - timestamps[start]).total_seconds() / 3600}h"
                              })
                 else:
-                    i+=1
+                    i += 1
 
         # （actual)突变点、突变点位置的整体mape
         actual = details['actual'].values
@@ -1305,5 +1302,5 @@ if __name__ == '__main__':
 
     # 逐时间点timepoint / 整体mape / 日级别 mape
     mape_dict = MetricsCalculator.calc_hierarchical_metrics(predictions=predictions, actual_data=no_scaled_data.copy(),
-                                                            level='o')
+                                                            level='o',shift =24,input_width=6)
     logger.debug(f"mape_dict含有的任务：{mape_dict.keys}")

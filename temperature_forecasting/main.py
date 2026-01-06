@@ -8,14 +8,10 @@
 # missing列logger 从提示改为报错 尽早暴露/结果无意义/
 # 统一下划线/标准化列有不存在需要提前验证
 import copy
-import os
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-
-import pandas as pd
-from sklearn.utils.validation import check_is_fitted
 from utils.tensorflow_config import TensorFlowConfig
-from models.NeuralNetwork import TimeSeriesEstimator, TimeSeriesPostProcessor,MetricsCalculator
+from models.NeuralNetwork import TimeSeriesEstimator, TimeSeriesPostProcessor, MetricsCalculator
 from pipelines.preprocess_pipeline import CompletePreprocessor
 from data.data_preprocessing import TimeSeriesSplitter
 from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, DeleteUselessCols, ProblemColumnsFixed,
@@ -30,6 +26,8 @@ from data.data_preprocessing import SimpleTimeSampler
 from data.feature_engineering import (GenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
                                       UnifiedFeatureScaler, CategoricalEncoding)
 from data.exploration import VisualizationForNeural
+from deployment import DeploymentManager
+from predictor import TrainedModelPredictor
 import logging.config
 from logging_config import LOGGING_CONFIG
 import logging
@@ -96,10 +94,10 @@ def main():
     scaling_config = {
         'transformers': [
             {'standard': {
-                'columns': ['p', 'Tpot', 'Tdew', 'wv_x', 'wv_y', 'max. wv_x', 'max. wv_y']}},
-            {'minmax': {'columns': ['rh', 'VPmax', 'Vpact', 'VPdef', 'sh', 'H2OC', 'rho'], 'feature_range': (0, 1)}},
+                'columns': ['p', 'Tpot', 'Tdew', 'wv_x', 'wv_y', 'max. wv_x', 'max. wv_y','rh', 'VPmax', 'Vpact', 'VPdef', 'sh', 'H2OC', 'rho']}},
+            {'minmax': {'columns': [], 'feature_range': (-1, 1)}},
             # 相同方法，相同其他参数配置，在columns列表填写
-            {'minmax': {'columns': ['T'], 'feature_range': (-1, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
+            {'minmax': {'columns': ['timedelta'], 'feature_range': (0, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
             {'robust': {'columns': [], 'quantile_range': (10, 90)}}
         ],
         'skip_scale': ['is_night', 'Day_sin', 'Day_cos', 'Year_sin', 'Year_cos', 'Month_sin', 'Month_cos', 'Season_sin',
@@ -109,8 +107,9 @@ def main():
 
     # 先初始化 再延迟计算（lazy evaluation）
     preparation_configs = [
-        {'obj_list': [DescribeData(log_level="DEBUG"), DeleteUselessCols()], 'len_change': False},
-        {'obj_list': [RemoveDuplicates(download_config=download_duplicates_config), ], 'len_change': True},
+        {'obj_list': [DescribeData(log_level="DEBUG"), DeleteUselessCols(),
+                      ProcessTimeseriesColumns(interactive=False)], 'len_change': False},
+        {'obj_list': [RemoveDuplicates(download_config=download_duplicates_config)], 'len_change': True},
         {'obj_list': [ColumnsTypeIdentify(),
                       ConvertCategoricalColumns(categorical_columns=[]),
                       ConvertNumericColumns(preserve_object_integer_types=True, exclude_cols=['Date Time']),
@@ -145,19 +144,11 @@ def main():
     df_train, df_val, df_test = splitter.learn_process(raw_data)
     logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
 
-    # 3. 检查预测数据集时间列的连续性（时间列智能检测并转换 + 时间序列缺失情况） Date Time
-    time_detector = ProcessTimeseriesColumns(interactive=False, create_extract_continuous=True)
-    df_test, _ = time_detector.learn_process(df_test, y=None)
-
-    sampler = SimpleTimeSampler(time_column='Date Time', freq_hours=1, minute=0, second=0)
-    valid_df_test,_=sampler.learn_process(df_test,y=None)
-    time_col = time_detector.valid_time_column_
-
-    # 4. 数据预处理(生成训练、验证、预测数据）
+    # 3. 数据预处理(生成训练、验证、预测数据）
     preprocessor = CompletePreprocessor(preparation_configs)
     features_temp_train, _ = preprocessor.train(features=df_train, labels=None)
 
-    # 立即检查状态
+    # # 立即检查状态
     # logger.debug("=== 训练后立即检查 ===")
     # for name, pipeline in preprocessor.pipelines_.items():
     #     logger.debug(f"{name}:")
@@ -176,10 +167,11 @@ def main():
     #             logger.debug(f"    ✗ {step_name} 未拟合: {e}")
 
     features_temp_val, _ = preprocessor.transform_predict(features=df_val, labels=None)
-    features_temp_test, _ = preprocessor.transform_predict(features=valid_df_test, labels=None)
+    features_temp_test, _ = preprocessor.transform_predict(features=df_test, labels=None)
 
     num_cols = preprocessor.get_specific_attribute(4, 'engineer_3', 'numeric_columns_')  # 取第5个class的第4步的属性
     cat_cols = preprocessor.get_specific_attribute(4, 'engineer_4', 'categorical_columns_')
+    time_col = preprocessor.get_specific_attribute(0, 'engineer_2', 'valid_time_column_')
 
     # 4. 并行模型训练、评估
     # single_base_model_config = {'numeric_columns': num_cols,
@@ -242,9 +234,13 @@ def main():
 
     data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
 
+    # 准备指标计算数据（回测用，预测不用） 采样后的原数据
+    df_test = preprocessor.get_specific_step(0, 'engineer_2').transform(df_test)
+    valid_df_test, _ = preprocessor._get_step(3, 0).process(df_test)  # 获取自定义cleaner实例 （第4个class,第0个实例)
+
     # 并行训练和预测
-    def train_single_config(config, X, y, preprocessor, data, no_scaled_data,
-                            save_dir=None, calc_metrics=True):
+    def train_single_config(config, X, y, preprocessor, data,
+                            save_dir=None, calc_metrics=True, no_scaled_data=None):
         """
         单个模型的训练和预测流程
 
@@ -254,7 +250,7 @@ def main():
             y: 标签（可能为None）
             preprocessor: 预处理器对象,提取逆转换pipeline步骤
             historical_timestamps: 历史时间戳，用于预测结果展示
-            new_data: 测试 / 新数据（用于一次预测）
+            no_scaled_data: 测试 / 新数据（用于一次回测 计算指标
             save_dir: 保存目录，如果为None则不保存
         Returns:
             dict: 包含模型、预测结果和postprocessor
@@ -295,14 +291,14 @@ def main():
             # 5. 逆转换（使用后处理器）预测数据 + 原始数据（用于训练的数值列里面的2分类列，未标准化，需要排除掉）
             inverse_predictions = postprocessor.custom_inverse_transform(
                 raw_predictions=raw_predictions,
-                use_saved=True,  # 使用【内存】中的preprocessor
-                task_config= config.get('output_config'),
+                use_saved=False,  # 使用【内存】中的preprocessor
+                task_config=config.get('output_config'),
                 output_width=config.get('output_width'),
                 pipeline_name='pipeline_4',
                 step_names=['engineer_3', 'engineer_4'])
 
             # 6. 添加时间戳
-            final_pred_results,predictions_dict = postprocessor.add_timestamps(
+            final_pred_results, predictions_dict = postprocessor.add_timestamps(
                 predictions=inverse_predictions,
                 historical_timestamps=features_temp_data_copy[time_column],
                 input_width=config.get('input_width', 6),
@@ -327,25 +323,26 @@ def main():
                 # 逐时间点timepoint / 各级别 mape mse mae
                 mape_dict = MetricsCalculator.calc_hierarchical_metrics(predictions=predictions_dict,
                                                                         actual_data=no_scaled_data.copy(),
-                                                                        input_width =config.get('input_width'),
-                                                                        shift =config.get('shift'),
+                                                                        input_width=config.get('input_width'),
+                                                                        shift=config.get('shift'),
                                                                         level='o')  # 原始时间点维度
                 logger.debug(f"mape_dict含有的任务：{mape_dict.keys}")
 
-
-
             # 8. 保存状态
-            if save_dir:
-                model_save_dir = os.path.join(save_dir, model_name)
-                os.makedirs(model_save_dir, exist_ok=True)
+            predict_window_,predict_window_config = model._forecast_window_generator()
+            best_checkpoint = model.best_checkpoint # 'saved_model/multi_lstm1_20260104_143043/tf_checkpoints/model_epoch_2/'
 
-                # 保存模型（调整）
-                # 保存后处理器状态
-                postprocessor.save_state(model_save_dir)
-                # 保存预测结果
-                results_file = os.path.join(model_save_dir, 'predictions.csv')
-                final_results.to_csv(results_file, index=False)
-                logger.info(f"模型状态已保存到：{model_save_dir}")
+            if save_dir:
+                deployment = DeploymentManager(
+                    model_name = config['model_type'],
+                    bestpoint=best_checkpoint,
+                    preprocessor=preprocessor,
+                    postprocessor=postprocessor,
+                    model_config=config,
+                    window_config=predict_window_config,
+                    window_generator=predict_window_
+                )
+                deployment.save('./deployment_package')
 
             return {
                 'model_name': model_name,
@@ -356,6 +353,7 @@ def main():
                 'config': config,
                 'success': True
             }
+
 
         except Exception as e:
             logger.error(f"模型 {model_name} 训练失败: {str(e)}", exc_info=True)
@@ -399,6 +397,9 @@ if __name__ == "__main__":
     matplotlib.use('Agg')
     main()
 
+
+
+
 # save的节点 是否是最佳模型
 # 多变量输出 如何协调权重，以及梯度剪裁
 
@@ -422,9 +423,3 @@ if __name__ == "__main__":
 #     'epochs': 20,
 #     'verbose': 2
 # }}
-
-
-# 直接加载训练模型并预测
-# predictor = TrainedModelPredictor("/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm1_20251219_100333/tf_checkpoints/model_epoch_2/")
-# predictions = predictor.predict(new_cleaned_data)
-# 预测最后一步的处理

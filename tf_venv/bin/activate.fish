@@ -33,7 +33,7 @@ end
 # Unset irrelevant variables.
 deactivate nondestructive
 
-set -gx VIRTUAL_ENV "/Users/shibo/Python/pythonProject1/tf_venv"
+set -gx VIRTUAL_ENV "/Users/shibo/Python/NeuralNetwork/tf_venv"
 
 set -gx _OLD_VIRTUAL_PATH $PATH
 set -gx PATH "$VIRTUAL_ENV/bin" $PATH

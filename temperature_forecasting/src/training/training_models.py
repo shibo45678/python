@@ -112,7 +112,7 @@ def TrainingSingleModel(model_name: str,
                 with suppress_output():
                     # 1. 保存为.keras格式（用于predict方法）
                     keras_path = os.path.join(checkpoint_dir, 'model.keras')
-                    self.model.save(keras_path, save_format='keras')  # 默认就是.keras格式
+                    self.model.save(keras_path)  # 默认就是.keras格式
 
                     # 2. 保存为SavedModel格式（用于部署）
                     export_path = os.path.join(checkpoint_dir, 'saved_model')
@@ -253,7 +253,7 @@ def TrainingMultiModel(model_name: str,
                 with suppress_output():
                     # 1. 保存为.keras格式（用于predict方法）
                     keras_path = os.path.join(checkpoint_dir, 'model.keras')
-                    self.model.save(keras_path, save_format='keras')  # 默认就是.keras格式
+                    self.model.save(keras_path)  # 默认就是.keras格式
 
                     # 2. 保存为SavedModel格式（用于部署）
                     export_path = os.path.join(checkpoint_dir,'saved_model')

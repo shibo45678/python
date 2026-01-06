@@ -1,0 +1,539 @@
+{
+  "model_config": {
+    "numeric_columns": [
+      "p",
+      "T",
+      "Tpot",
+      "Tdew",
+      "rh",
+      "VPmax",
+      "VPact",
+      "VPdef",
+      "sh",
+      "H2OC",
+      "rho",
+      "is_outlier_T",
+      "is_outlier_rh",
+      "wv_x",
+      "wv_y",
+      "max. wv_x",
+      "max. wv_y",
+      "is_night",
+      "timedelta",
+      "days_since_start",
+      "years_since_start",
+      "Day_sin",
+      "Day_cos",
+      "Year_sin",
+      "Year_cos",
+      "Month_sin",
+      "Month_cos",
+      "Season_sin",
+      "Season_cos"
+    ],
+    "categorical_columns": [],
+    "time_column": "Date Time",
+    "input_width": 6,
+    "output_width": 5,
+    "shift": 24,
+    "output_config": {
+      "T": {
+        "type": "regression",
+        "loss": "mse",
+        "metrics": [
+          "mae"
+        ],
+        "loss_weights": 0.95,
+        "units": 1
+      },
+      "rh": {
+        "type": "regression",
+        "loss": "mse",
+        "metrics": [
+          "mae"
+        ],
+        "loss_weights": 0.22,
+        "units": 1
+      }
+    },
+    "multi_tasks": true,
+    "model_type": "multi_lstm1",
+    "learning_rate": 0.00035,
+    "units": [
+      192
+    ],
+    "return_sequences": [
+      false
+    ],
+    "epochs": 3,
+    "verbose": 2
+  },
+  "window_config": {
+    "mode": "forecast",
+    "input_width": 6,
+    "numeric_columns": [
+      "p",
+      "T",
+      "Tpot",
+      "Tdew",
+      "rh",
+      "VPmax",
+      "VPact",
+      "VPdef",
+      "sh",
+      "H2OC",
+      "rho",
+      "is_outlier_T",
+      "is_outlier_rh",
+      "wv_x",
+      "wv_y",
+      "max. wv_x",
+      "max. wv_y",
+      "is_night",
+      "timedelta",
+      "days_since_start",
+      "years_since_start",
+      "Day_sin",
+      "Day_cos",
+      "Year_sin",
+      "Year_cos",
+      "Month_sin",
+      "Month_cos",
+      "Season_sin",
+      "Season_cos"
+    ],
+    "categorical_columns": [],
+    "embedding_configs": {}
+  },
+  "preprocessor_info": {
+    "type": "CompletePreprocessor",
+    "serialization_method": "cloudpickle",
+    "file_path": "preprocessor.cpkl",
+    "processing_steps": {
+      "pipeline_0": {
+        "pipeline_type": "Pipeline",
+        "steps": [
+          {
+            "step_name": "engineer_0",
+            "transformer_type": "DescribeData",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_1",
+            "transformer_type": "DeleteUselessCols",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_2",
+            "transformer_type": "ProcessTimeseriesColumns",
+            "is_fitted": null,
+            "statistices": null
+          }
+        ],
+        "is_fitted": null
+      },
+      "pipeline_2": {
+        "pipeline_type": "Pipeline",
+        "steps": [
+          {
+            "step_name": "engineer_0",
+            "transformer_type": "ColumnsTypeIdentify",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_1",
+            "transformer_type": "ConvertCategoricalColumns",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_2",
+            "transformer_type": "ConvertNumericColumns",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_3",
+            "transformer_type": "ProblemColumnsFixed",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_4",
+            "transformer_type": "SpecialColumnsFixed",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_5",
+            "transformer_type": "CheckExtreFeatures",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_6",
+            "transformer_type": "NumericOutlierProcessor",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_7",
+            "transformer_type": "CategoricalOutlierProcessor",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_8",
+            "transformer_type": "NumericMissingValueHandler",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_9",
+            "transformer_type": "CategoricalMissingValueHandler",
+            "is_fitted": null,
+            "statistices": null
+          }
+        ],
+        "is_fitted": null
+      },
+      "pipeline_4": {
+        "pipeline_type": "Pipeline",
+        "steps": [
+          {
+            "step_name": "engineer_0",
+            "transformer_type": "GenerationFromNumeric",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_1",
+            "transformer_type": "GenerationFromTimeseries",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_2",
+            "transformer_type": "BasedOnCorrSelector",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_3",
+            "transformer_type": "UnifiedFeatureScaler",
+            "is_fitted": null,
+            "statistices": {
+              "p": {
+                "mean": [
+                  988.9110623371059
+                ],
+                "std": [
+                  8.093771309368721
+                ],
+                "var": [
+                  65.50913400836025
+                ]
+              },
+              "T": {
+                "mean": [
+                  8.97656128387304
+                ],
+                "std": [
+                  8.436373013504104
+                ],
+                "var": [
+                  71.17238962298033
+                ]
+              },
+              "Tpot": {
+                "mean": [
+                  283.0485256524688
+                ],
+                "std": [
+                  8.513494115705571
+                ],
+                "var": [
+                  72.4795820581534
+                ]
+              },
+              "Tdew": {
+                "mean": [
+                  4.547100931843336
+                ],
+                "std": [
+                  6.832154635730556
+                ],
+                "var": [
+                  46.67833696653453
+                ]
+              },
+              "rh": {
+                "mean": [
+                  76.44771341354564
+                ],
+                "std": [
+                  15.741936610862114
+                ],
+                "var": [
+                  247.808568260401
+                ]
+              },
+              "VPmax": {
+                "mean": [
+                  13.01354359313078
+                ],
+                "std": [
+                  6.9899184228864195
+                ],
+                "var": [
+                  48.85895955860697
+                ]
+              },
+              "VPact": {
+                "mean": [
+                  9.288341180513406
+                ],
+                "std": [
+                  4.130379266206269
+                ],
+                "var": [
+                  17.060032882706636
+                ]
+              },
+              "VPdef": {
+                "mean": [
+                  3.486792281052519
+                ],
+                "std": [
+                  3.493288774842367
+                ],
+                "var": [
+                  12.203066464439685
+                ]
+              },
+              "sh": {
+                "mean": [
+                  5.837311578421222
+                ],
+                "std": [
+                  2.4498338995199394
+                ],
+                "var": [
+                  6.001686135237072
+                ]
+              },
+              "H2OC": {
+                "mean": [
+                  9.345310614445356
+                ],
+                "std": [
+                  3.9085357308378894
+                ],
+                "var": [
+                  15.276651559236473
+                ]
+              },
+              "rho": {
+                "mean": [
+                  1217.4882559177408
+                ],
+                "std": [
+                  38.77704855252265
+                ],
+                "var": [
+                  1503.6594944446992
+                ]
+              },
+              "wv_x": {
+                "mean": [
+                  -0.6153364542387094
+                ],
+                "std": [
+                  2.004053900047959
+                ],
+                "var": [
+                  4.016232034297436
+                ]
+              },
+              "wv_y": {
+                "mean": [
+                  -0.41391126045429655
+                ],
+                "std": [
+                  1.5525188540193693
+                ],
+                "var": [
+                  2.410314792085616
+                ]
+              },
+              "max. wv_x": {
+                "mean": [
+                  -0.9967750910775108
+                ],
+                "std": [
+                  3.1134673534726316
+                ],
+                "var": [
+                  9.693678961139872
+                ]
+              },
+              "max. wv_y": {
+                "mean": [
+                  -0.7469927895636871
+                ],
+                "std": [
+                  2.6122680199424706
+                ],
+                "var": [
+                  6.823944208014157
+                ]
+              },
+              "timedelta": {
+                "data_min": [
+                  0.0
+                ],
+                "data_max_": [
+                  57600.0
+                ],
+                "data_range": [
+                  57600.0
+                ]
+              },
+              "days_since_start": {
+                "mean": [
+                  1166.6561819415188
+                ],
+                "std": [
+                  673.9154660726424
+                ],
+                "var": [
+                  454162.0554119068
+                ]
+              },
+              "years_since_start": {
+                "mean": [
+                  3.194130546041119
+                ],
+                "std": [
+                  1.8450799892474812
+                ],
+                "var": [
+                  3.404320166721485
+                ]
+              }
+            }
+          },
+          {
+            "step_name": "engineer_4",
+            "transformer_type": "CategoricalEncoding",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_5",
+            "transformer_type": "VisualizationForNeural",
+            "is_fitted": null,
+            "statistices": null
+          }
+        ],
+        "is_fitted": null
+      },
+      "cleaner_1": {
+        "cleaner_type": "dict",
+        "steps": [
+          {
+            "step_name": "step_0"
+          },
+          {
+            "step_name": "is_processed_"
+          }
+        ],
+        "is_processed": true
+      },
+      "cleaner_3": {
+        "cleaner_type": "dict",
+        "steps": [
+          {
+            "step_name": "step_0"
+          },
+          {
+            "step_name": "is_processed_"
+          }
+        ],
+        "is_processed": true
+      }
+    },
+    "feature_info": {
+      "num_cols_input": [
+        "p",
+        "T",
+        "Tpot",
+        "Tdew",
+        "rh",
+        "VPmax",
+        "VPact",
+        "VPdef",
+        "sh",
+        "H2OC",
+        "rho",
+        "is_outlier_T",
+        "is_outlier_rh",
+        "wv_x",
+        "wv_y",
+        "max. wv_x",
+        "max. wv_y",
+        "is_night",
+        "timedelta",
+        "days_since_start",
+        "years_since_start",
+        "Day_sin",
+        "Day_cos",
+        "Year_sin",
+        "Year_cos",
+        "Month_sin",
+        "Month_cos",
+        "Season_sin",
+        "Season_cos"
+      ],
+      "cat_cols_input": [],
+      "num_cols_inverse": [
+        "p",
+        "T",
+        "Tpot",
+        "Tdew",
+        "rh",
+        "VPmax",
+        "VPact",
+        "VPdef",
+        "sh",
+        "H2OC",
+        "rho",
+        "wv_x",
+        "wv_y",
+        "max. wv_x",
+        "max. wv_y",
+        "timedelta",
+        "days_since_start",
+        "years_since_start",
+        "Day_sin",
+        "Day_cos",
+        "Year_sin",
+        "Year_cos",
+        "Month_sin",
+        "Month_cos",
+        "Season_sin",
+        "Season_cos"
+      ],
+      "time_col": "Date Time"
+    }
+  },
+  "deployment_info": {
+    "created_at": "2026-01-06T20:25:23.475387",
+    "version": "1.0",
+    "framework": "tensorflow",
+    "requires_preprocessing": true
+  }
+}

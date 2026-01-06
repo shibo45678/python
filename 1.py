@@ -55,6 +55,8 @@ def get_deployment_model(self):
 
     print(f"✅ 部署模型位置: {savedmodel_dir}")
     return savedmodel_dir
+
+
 #
 # def deploy_with_tensorflow_serving(self):
 #     """生成TensorFlow Serving部署命令"""
@@ -231,7 +233,6 @@ def save_for_deployment(self, deploy_path):
 
     # 2. 保存预处理流水线
 
-
     # 保存配置信息
     deploy_config = {
         'model_config': self.model_config,
@@ -261,7 +262,7 @@ def save_for_deployment(self, deploy_path):
     if hasattr(self, 'scaler'):
         joblib.dump(self.scaler, f'{save_path}/scaler.pkl')
 
-    # # 必需：特征工程配置
+        # # 必需：特征工程配置
         # 'feature_config': {
         #     'input_columns': self._get_input_columns(),
         #     'output_columns': self._get_output_columns(),
@@ -331,6 +332,7 @@ def load_for_production(cls, save_path):
 
     return estimator
 
+
 # def load_for_deployment(deploy_path):
 #     """加载部署模型"""
 #     savedmodel_dir = os.path.join(deploy_path, 'saved_model')
@@ -341,7 +343,6 @@ def load_for_production(cls, save_path):
 #         config = json.load(f)
 #
 #     return model, config
-
 
 
 # import numpy as np
@@ -615,4 +616,314 @@ def load_for_production(cls, save_path):
 # print("结果:")
 # print(daily_stats.head())
 
+import cloudpickle
+import json
+import os
+import shutil
+from pathlib import Path
 
+
+def save_for_deployment(self, deploy_path):
+    """保存完整部署包"""
+    # 检查是否已训练
+    check_is_fitted(self)
+
+    # 创建部署目录
+    deploy_path = Path(deploy_path)
+    deploy_path.mkdir(parents=True, exist_ok=True)
+
+    # 1. 保存模型（从检查点复制 SavedModel）
+    source_savedmodel = Path(self.best_checkpoint) / 'saved_model'
+    target_savedmodel = deploy_path / 'saved_model'
+
+    if source_savedmodel.exists():
+        # 清除目标目录
+        if target_savedmodel.exists():
+            shutil.rmtree(target_savedmodel)
+        # 复制 SavedModel
+        shutil.copytree(source_savedmodel, target_savedmodel)
+        logger.info(f"已复制 SavedModel: {target_savedmodel}")
+    else:
+        # 如果没有 SavedModel，创建新的
+        if not hasattr(self, '_prediction_model'):
+            self._prediction_model = self.reconstruct_model()
+        self._prediction_model.save(str(target_savedmodel), save_format='tf')
+        logger.info(f"已创建新的 SavedModel: {target_savedmodel}")
+
+    # 2. 保存预处理器（使用 cloudpickle）
+    if hasattr(self, 'preprocessor') and self.preprocessor is not None:
+        preprocessor_path = deploy_path / 'preprocessor.cpkl'
+        with open(preprocessor_path, 'wb') as f:
+            cloudpickle.dump(self.preprocessor, f)
+        logger.info(f"已保存预处理器: {preprocessor_path}")
+
+    # 3. 保存特征工程管道
+    if hasattr(self, 'feature_pipeline') and self.feature_pipeline is not None:
+        feature_pipeline_path = deploy_path / 'feature_pipeline.cpkl'
+        with open(feature_pipeline_path, 'wb') as f:
+            cloudpickle.dump(self.feature_pipeline, f)
+        logger.info(f"已保存特征工程管道: {feature_pipeline_path}")
+
+    # 4. 保存后处理器
+    if hasattr(self, 'postprocessor') and self.postprocessor is not None:
+        postprocessor_path = deploy_path / 'postprocessor.cpkl'
+        with open(postprocessor_path, 'wb') as f:
+            cloudpickle.dump(self.postprocessor, f)
+        logger.info(f"已保存后处理器: {postprocessor_path}")
+
+    # 5. 保存标准化器/编码器
+    if hasattr(self, 'scaler') and self.scaler is not None:
+        scaler_path = deploy_path / 'scaler.cpkl'
+        with open(scaler_path, 'wb') as f:
+            cloudpickle.dump(self.scaler, f)
+        logger.info(f"已保存标准化器: {scaler_path}")
+
+    # 6. 保存完整的流水线状态（如果之前有保存）
+    if hasattr(self, 'serialized_states') and self.serialized_states:
+        pipeline_state_path = deploy_path / 'pipeline_states.cpkl'
+        with open(pipeline_state_path, 'wb') as f:
+            cloudpickle.dump(self.serialized_states, f)
+        logger.info(f"已保存完整流水线状态: {pipeline_state_path}")
+
+    # 7. 保存配置和元数据
+    config = {
+        'model_type': type(self).__name__,
+        'input_shape': getattr(self, 'input_shape', None),
+        'output_shape': getattr(self, 'output_shape', None),
+        'feature_columns': getattr(self, 'feature_columns', None),
+        'target_columns': getattr(self, 'target_columns', None),
+        'created_at': datetime.now().isoformat(),
+        'version': '1.0'
+    }
+
+    config_path = deploy_path / 'config.json'
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+    # 8. 保存部署包版本信息
+    deployment_info = {
+        'deployment_format': 'v2',
+        'saved_model_path': str(target_savedmodel.relative_to(deploy_path)),
+        'components': [],
+        'dependencies': self._get_dependencies()
+    }
+
+    # 收集所有组件信息
+    for file in deploy_path.glob('*.cpkl'):
+        deployment_info['components'].append(file.name)
+
+    info_path = deploy_path / 'deployment_info.json'
+    with open(info_path, 'w', encoding='utf-8') as f:
+        json.dump(deployment_info, f, indent=2, ensure_ascii=False)
+
+    logger.info(f"完整部署包已保存到: {deploy_path}")
+    return str(deploy_path)
+
+
+def _get_dependencies(self):
+    """获取依赖信息"""
+    import tensorflow as tf
+    import cloudpickle
+    import numpy as np
+    import pandas as pd
+
+    return {
+        'tensorflow': tf.__version__,
+        'cloudpickle': cloudpickle.__version__,
+        'numpy': np.__version__,
+        'pandas': pd.__version__ if 'pd' in locals() else None
+    }
+
+
+class DeploymentModel:
+    """部署时使用的模型包装器"""
+
+    def __init__(self, deploy_path):
+        self.deploy_path = Path(deploy_path)
+        self.loaded = False
+
+    def load(self):
+        """加载所有组件"""
+        # 1. 加载模型
+        saved_model_path = self.deploy_path / 'saved_model'
+        if saved_model_path.exists():
+            import tensorflow as tf
+            self.model = tf.keras.models.load_model(str(saved_model_path))
+            logger.info(f"已加载 SavedModel: {saved_model_path}")
+        else:
+            raise FileNotFoundError(f"找不到 SavedModel: {saved_model_path}")
+
+        # 2. 加载预处理器
+        preprocessor_path = self.deploy_path / 'preprocessor.cpkl'
+        if preprocessor_path.exists():
+            with open(preprocessor_path, 'rb') as f:
+                self.preprocessor = cloudpickle.load(f)
+            logger.info(f"已加载预处理器: {preprocessor_path}")
+
+        # 3. 加载特征工程管道
+        feature_pipeline_path = self.deploy_path / 'feature_pipeline.cpkl'
+        if feature_pipeline_path.exists():
+            with open(feature_pipeline_path, 'rb') as f:
+                self.feature_pipeline = cloudpickle.load(f)
+            logger.info(f"已加载特征工程管道: {feature_pipeline_path}")
+
+        # 4. 加载后处理器
+        postprocessor_path = self.deploy_path / 'postprocessor.cpkl'
+        if postprocessor_path.exists():
+            with open(postprocessor_path, 'rb') as f:
+                self.postprocessor = cloudpickle.load(f)
+            logger.info(f"已加载后处理器: {postprocessor_path}")
+
+        # 5. 加载标准化器
+        scaler_path = self.deploy_path / 'scaler.cpkl'
+        if scaler_path.exists():
+            with open(scaler_path, 'rb') as f:
+                self.scaler = cloudpickle.load(f)
+            logger.info(f"已加载标准化器: {scaler_path}")
+
+        # 6. 加载配置
+        config_path = self.deploy_path / 'config.json'
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                self.config = json.load(f)
+            logger.info(f"已加载配置: {config_path}")
+
+        self.loaded = True
+        return self
+
+    def predict(self, input_data):
+        """完整的预测流程"""
+        if not self.loaded:
+            self.load()
+
+        # 1. 预处理
+        if hasattr(self, 'preprocessor'):
+            processed_data = self.preprocessor.transform(input_data)
+        else:
+            processed_data = input_data
+
+        # 2. 特征工程
+        if hasattr(self, 'feature_pipeline'):
+            processed_data = self.feature_pipeline.transform(processed_data)
+
+        # 3. 标准化
+        if hasattr(self, 'scaler'):
+            processed_data = self.scaler.transform(processed_data)
+
+        # 4. 模型预测
+        predictions = self.model.predict(processed_data)
+
+        # 5. 逆标准化
+        if hasattr(self, 'scaler'):
+            predictions = self.scaler.inverse_transform(predictions)
+
+        # 6. 后处理
+        if hasattr(self, 'postprocessor'):
+            predictions = self.postprocessor.transform(predictions)
+
+        return predictions
+
+    class ModelDeploymentPackage:
+        """创建和管理模型部署包"""
+
+        def __init__(self, trained_model):
+            """
+            Args:
+                trained_model: 已训练好的完整模型对象
+            """
+            self.trained_model = trained_model
+
+        def create_package(self, output_dir, include_components=None):
+            """
+            创建部署包
+
+            Args:
+                output_dir: 输出目录
+                include_components: 要包含的组件列表，如 ['preprocessor', 'scaler', 'postprocessor']
+            """
+            if include_components is None:
+                include_components = ['all']
+
+            package_dir = Path(output_dir) / f"model_package_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            package_dir.mkdir(parents=True, exist_ok=True)
+
+            # 保存不同组件
+            components = {}
+
+            # SavedModel
+            if hasattr(self.trained_model, 'model'):
+                model_path = package_dir / 'model'
+                self.trained_model.model.save(str(model_path), save_format='tf')
+                components['model'] = str(model_path)
+
+            # 使用 cloudpickle 保存其他组件
+            component_map = {
+                'preprocessor': getattr(self.trained_model, 'preprocessor', None),
+                'feature_engineer': getattr(self.trained_model, 'feature_engineer', None),
+                'scaler': getattr(self.trained_model, 'scaler', None),
+                'encoder': getattr(self.trained_model, 'encoder', None),
+                'postprocessor': getattr(self.trained_model, 'postprocessor', None),
+                'config': getattr(self.trained_model, 'config', {})
+            }
+
+            for name, component in component_map.items():
+                if component is not None and ('all' in include_components or name in include_components):
+                    file_path = package_dir / f"{name}.cpkl"
+                    with open(file_path, 'wb') as f:
+                        cloudpickle.dump(component, f)
+                    components[name] = str(file_path)
+
+            # 保存元数据
+            metadata = {
+                'created_at': datetime.now().isoformat(),
+                'model_type': type(self.trained_model).__name__,
+                'components': list(components.keys()),
+                'package_version': '1.0'
+            }
+
+            metadata_path = package_dir / 'metadata.json'
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, indent=2)
+
+            logger.info(f"部署包已创建: {package_dir}")
+            return package_dir
+
+        #
+        # agg(
+        #     metrics=('old_col', lambda x: x.mean())
+        # )
+        #
+        # # 创建metrics的多级目录
+        # agg(
+        #     metrics=('old_col',
+        #              lambda x: {
+        #                  "mean": np.mean(x),
+        #                  "std": np.std(x)}
+        #              )
+        # )
+        # # 作用条件列(转化为字典)
+        # cond = {x : 'mean' for x in x.columns if x != 'time_column'}
+        # agg(cond)
+        #
+        # # 字典解包
+        # agg(
+        #     **{x: self.aggregation for x in x.columns if x !='time_column'}
+        # )
+
+        import pandas as pd
+        df = pd.DataFrame({
+            'abc': ['A', 'A', 'A', 'B', 'B'],
+            'num': [1, 2, 3, 10, 20]
+        })
+
+        print(df.groupby('abc').agg(percentile=('num', lambda x: pd.cut(x, bins=2).tolist())))
+
+        # 先分桶，再按组和桶分组
+        def group_cut(x):
+            """在每个分组内独立分桶"""
+            return pd.cut(x, bins=2)
+
+        # 应用分组分桶
+        df['bucket_correct'] = df.groupby('abc')['num'].transform(group_cut)
+        print("\n正确：分组内独立分桶:")
+        print(df[['abc', 'num', 'bucket_correct']])
