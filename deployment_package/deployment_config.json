@@ -65,7 +65,7 @@
     "return_sequences": [
       false
     ],
-    "epochs": 3,
+    "epochs": 30,
     "verbose": 2
   },
   "window_config": {
@@ -124,12 +124,6 @@
             "transformer_type": "DeleteUselessCols",
             "is_fitted": null,
             "statistices": null
-          },
-          {
-            "step_name": "engineer_2",
-            "transformer_type": "ProcessTimeseriesColumns",
-            "is_fitted": null,
-            "statistices": null
           }
         ],
         "is_fitted": null
@@ -145,54 +139,60 @@
           },
           {
             "step_name": "engineer_1",
-            "transformer_type": "ConvertCategoricalColumns",
+            "transformer_type": "ProcessTimeseriesColumns",
             "is_fitted": null,
             "statistices": null
           },
           {
             "step_name": "engineer_2",
-            "transformer_type": "ConvertNumericColumns",
+            "transformer_type": "ConvertCategoricalColumns",
             "is_fitted": null,
             "statistices": null
           },
           {
             "step_name": "engineer_3",
-            "transformer_type": "ProblemColumnsFixed",
+            "transformer_type": "ConvertNumericColumns",
             "is_fitted": null,
             "statistices": null
           },
           {
             "step_name": "engineer_4",
-            "transformer_type": "SpecialColumnsFixed",
+            "transformer_type": "ProblemColumnsFixed",
             "is_fitted": null,
             "statistices": null
           },
           {
             "step_name": "engineer_5",
-            "transformer_type": "CheckExtreFeatures",
+            "transformer_type": "SpecialColumnsFixed",
             "is_fitted": null,
             "statistices": null
           },
           {
             "step_name": "engineer_6",
-            "transformer_type": "NumericOutlierProcessor",
+            "transformer_type": "CheckExtreFeatures",
             "is_fitted": null,
             "statistices": null
           },
           {
             "step_name": "engineer_7",
-            "transformer_type": "CategoricalOutlierProcessor",
+            "transformer_type": "NumericOutlierProcessor",
             "is_fitted": null,
             "statistices": null
           },
           {
             "step_name": "engineer_8",
-            "transformer_type": "NumericMissingValueHandler",
+            "transformer_type": "CategoricalOutlierProcessor",
             "is_fitted": null,
             "statistices": null
           },
           {
             "step_name": "engineer_9",
+            "transformer_type": "NumericMissingValueHandler",
+            "is_fitted": null,
+            "statistices": null
+          },
+          {
+            "step_name": "engineer_10",
             "transformer_type": "CategoricalMissingValueHandler",
             "is_fitted": null,
             "statistices": null
@@ -228,167 +228,167 @@
             "statistices": {
               "p": {
                 "mean": [
-                  988.9110623371059
+                  988.8187372992265
                 ],
                 "std": [
-                  8.093771309368721
+                  8.052335677457675
                 ],
                 "var": [
-                  65.50913400836025
+                  64.84010986245777
                 ]
               },
               "T": {
                 "mean": [
-                  8.97656128387304
+                  8.992676264128496
                 ],
                 "std": [
-                  8.436373013504104
+                  8.829997663312291
                 ],
                 "var": [
-                  71.17238962298033
+                  77.96885873410051
                 ]
               },
               "Tpot": {
                 "mean": [
-                  283.0485256524688
+                  283.0719145746579
                 ],
                 "std": [
-                  8.513494115705571
+                  8.893331422714956
                 ],
                 "var": [
-                  72.4795820581534
+                  79.09134379424921
                 ]
               },
               "Tdew": {
                 "mean": [
-                  4.547100931843336
+                  4.490070910172516
                 ],
                 "std": [
-                  6.832154635730556
+                  7.1579076128529975
                 ],
                 "var": [
-                  46.67833696653453
+                  51.2356413941389
                 ]
               },
               "rh": {
-                "mean": [
-                  76.44771341354564
+                "data_min": [
+                  43.96
                 ],
-                "std": [
-                  15.741936610862114
+                "data_max_": [
+                  97.2
                 ],
-                "var": [
-                  247.808568260401
+                "data_range": [
+                  53.24
                 ]
               },
               "VPmax": {
-                "mean": [
-                  13.01354359313078
+                "data_min": [
+                  0.97
                 ],
-                "std": [
-                  6.9899184228864195
+                "data_max_": [
+                  32.585
                 ],
-                "var": [
-                  48.85895955860697
+                "data_range": [
+                  31.615000000000002
                 ]
               },
               "VPact": {
                 "mean": [
-                  9.288341180513406
+                  9.32273254015467
                 ],
                 "std": [
-                  4.130379266206269
+                  4.228632665639119
                 ],
                 "var": [
-                  17.060032882706636
+                  17.881334220910205
                 ]
               },
               "VPdef": {
-                "mean": [
-                  3.486792281052519
+                "data_min": [
+                  0.0
                 ],
-                "std": [
-                  3.493288774842367
+                "data_max_": [
+                  12.059999999999999
                 ],
-                "var": [
-                  12.203066464439685
+                "data_range": [
+                  12.059999999999999
                 ]
               },
               "sh": {
-                "mean": [
-                  5.837311578421222
+                "data_min": [
+                  2.07
                 ],
-                "std": [
-                  2.4498338995199394
+                "data_max_": [
+                  10.75
                 ],
-                "var": [
-                  6.001686135237072
+                "data_range": [
+                  8.68
                 ]
               },
               "H2OC": {
-                "mean": [
-                  9.345310614445356
+                "data_min": [
+                  3.32
                 ],
-                "std": [
-                  3.9085357308378894
+                "data_max_": [
+                  17.17
                 ],
-                "var": [
-                  15.276651559236473
+                "data_range": [
+                  13.850000000000001
                 ]
               },
               "rho": {
-                "mean": [
-                  1217.4882559177408
+                "data_min": [
+                  1134.3
                 ],
-                "std": [
-                  38.77704855252265
+                "data_max_": [
+                  1319.71
                 ],
-                "var": [
-                  1503.6594944446992
+                "data_range": [
+                  185.41000000000008
                 ]
               },
               "wv_x": {
                 "mean": [
-                  -0.6153364542387094
+                  -0.5706674347309535
                 ],
                 "std": [
-                  2.004053900047959
+                  1.9999092018122835
                 ],
                 "var": [
-                  4.016232034297436
+                  3.9996368154934445
                 ]
               },
               "wv_y": {
                 "mean": [
-                  -0.41391126045429655
+                  -0.40363728049246594
                 ],
                 "std": [
-                  1.5525188540193693
+                  1.5659140362065482
                 ],
                 "var": [
-                  2.410314792085616
+                  2.452086768788683
                 ]
               },
               "max. wv_x": {
                 "mean": [
-                  -0.9967750910775108
+                  -0.9258994731168761
                 ],
                 "std": [
-                  3.1134673534726316
+                  3.103942138552772
                 ],
                 "var": [
-                  9.693678961139872
+                  9.634456799483555
                 ]
               },
               "max. wv_y": {
                 "mean": [
-                  -0.7469927895636871
+                  -0.7289991776114823
                 ],
                 "std": [
-                  2.6122680199424706
+                  2.628006582556204
                 ],
                 "var": [
-                  6.823944208014157
+                  6.906418597958738
                 ]
               },
               "timedelta": {
@@ -396,32 +396,32 @@
                   0.0
                 ],
                 "data_max_": [
-                  57600.0
+                  7200.0
                 ],
                 "data_range": [
-                  57600.0
+                  7200.0
                 ]
               },
               "days_since_start": {
                 "mean": [
-                  1166.6561819415188
+                  875.0595359904819
                 ],
                 "std": [
-                  673.9154660726424
+                  505.49767828283694
                 ],
                 "var": [
-                  454162.0554119068
+                  255527.9027493385
                 ]
               },
               "years_since_start": {
                 "mean": [
-                  3.194130546041119
+                  2.3957824393989924
                 ],
                 "std": [
-                  1.8450799892474812
+                  1.3839772163801147
                 ],
                 "var": [
-                  3.404320166721485
+                  1.915392935459251
                 ]
               }
             }
@@ -531,7 +531,7 @@
     }
   },
   "deployment_info": {
-    "created_at": "2026-01-06T20:25:23.475387",
+    "created_at": "2026-01-07T16:45:13.397088",
     "version": "1.0",
     "framework": "tensorflow",
     "requires_preprocessing": true

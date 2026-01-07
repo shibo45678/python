@@ -1,4 +1,3 @@
-
 import cloudpickle
 import pickle
 import warnings
@@ -113,7 +112,11 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                                                                 valset=val_window_data,
                                                                 verbose=self.model_config['verbose'],
                                                                 epochs=self.model_config['epochs'],
-                                                                weights_dir=self.weights_dir)
+                                                                weights_dir=self.weights_dir,
+                                                                # 继续训练
+                                                                continue_from_experiment=self.model_config.get(
+                                                                    'continue_from')
+                                                                )
         # 单任务
         else:
             if self.model_config['model_type'].startswith('single_lstm'):
@@ -130,7 +133,8 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                                                                  valset=val_window_data,
                                                                  verbose=self.model_config['verbose'],
                                                                  epochs=self.model_config['epochs'],
-                                                                 weights_dir=self.weights_dir)
+                                                                 weights_dir=self.weights_dir,
+                                                                 )
 
         # 保存最佳检查点路径供后续使用
         self.best_checkpoint = best_checkpoint
@@ -353,132 +357,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             self.train_window_gen_ = self._train_window_generator(self.model_config['output_config'])
 
 
-class EmbeddingConfig:
-    """Embedding维度选择配置"""
-
-    @staticmethod
-    def get_embedding_dim(n_categories: int) -> int:
-        if n_categories <= 2:
-            return 1  # 二分类
-        elif n_categories <= 5:
-            return max(1, min(2, n_categories - 1))  # 小类别
-        elif n_categories <= 10:
-            return 3  # 中等类别
-        elif n_categories <= 20:
-            return 4  # 较大类别
-        elif n_categories <= 50:
-            return 6  # 大类别
-        else:
-            # 谷歌研究公式：1.6 * n_categories^0.56
-            return min(50, int(1.6 * n_categories ** 0.56))  # 保守的公式 min(8, int(0.8 * n_categories ** 0.4))
-
-    @staticmethod
-    def should_use_embedding(n_categories: int, unique_ratio: float) -> bool:
-        """
-        判断是否应该使用Embedding
-        unique_ratio: 唯一值数量 / 总样本数
-        """
-
-        if n_categories <= 5:
-            return unique_ratio < 0.1
-        elif n_categories <= 20:  # 高基数或中等基数都推荐使用Embedding
-            return unique_ratio < 0.3
-        else:
-            return unique_ratio < 0.5
-
-    @staticmethod
-    def _get_embedding_info(dataset: pd.DataFrame, cat_cols: list):
-        embedding_configs: Dict[str, Dict[str, Any]] = {}
-
-        if cat_cols and isinstance(dataset, pd.DataFrame):
-
-            for col in cat_cols:
-                series = dataset[col].dropna()
-                n_categories = int(series.nunique())
-                unique_ratio = n_categories / len(series)
-
-                base_config: Dict[str, Any] = {
-                    'input_dim': n_categories + 1,  # 已经预留了一个__UNKNOWN__ 不代表训练集就有n+1个种类，算的是(实际数据集中的种类数+1)
-                    'name': f'embedding_{col}'
-                }
-
-                if EmbeddingConfig.should_use_embedding(n_categories, unique_ratio):
-                    base_config['output_dim'] = EmbeddingConfig.get_embedding_dim(n_categories)
-
-                    # 自动添加正则化
-                    if n_categories <= 10:  # 小到中等类别
-                        base_config['embeddings_regularizer'] = l2(0.001)
-
-                else:  # 轻量Embedding
-                    base_config.update({
-                        'output_dim': max(1, min(2, n_categories // 20)),
-                        'embeddings_regularizer': l2(0.1)  # 强正则化(output_dim 从3->1)
-                    })
-                embedding_configs[col] = base_config
-
-            return embedding_configs
-
-
-class ModelConfigManager:
-    """统一管理模型配置的辅助类"""
-
-    @staticmethod
-    def get_loss_config(model_config):
-        # 单和多输出，都是字典
-        output_config = model_config.get('output_config', {})
-
-        output_names = list(output_config.keys())
-        loss_config = {}
-        for output_name in output_names:
-            cfg = output_config.get(output_name, {})
-            loss_type = cfg.get('type', 'regression')
-            loss_config[output_name] = cfg.get('loss', ModelConfigManager._get_default_loss(loss_type))
-        return loss_config
-
-    @staticmethod
-    def get_metrics_config(model_config):
-        output_config = model_config.get('output_config', {})
-
-        output_names = list(output_config.keys())
-        metrics_config = {}
-        for output_name in output_names:
-            cfg = output_config.get(output_name, {})
-            loss_type = cfg.get('type', 'regression')
-            metrics = cfg.get('metrics', ModelConfigManager._get_default_metrics(loss_type))
-            metrics_config[output_name] = metrics if isinstance(metrics, list) else [metrics]
-
-        return metrics_config
-
-    @staticmethod
-    def get_loss_weights_config(model_config):
-        output_config = model_config.get('output_config', {})
-
-        output_names = list(output_config.keys())
-        loss_weights = {}
-        for output_name in output_names:
-            cfg = output_config.get(output_name, {})
-            loss_weights[output_name] = cfg.get('loss_weights', 1.0)
-        return loss_weights
-
-    @staticmethod
-    def _get_default_loss(loss_type):
-        defaults = {
-            'regression': 'mse',
-            'classification': 'sparse_categorical_crossentropy',
-            'binary_classification': 'binary_crossentropy'
-        }
-        return defaults.get(loss_type, 'mse')
-
-    @staticmethod
-    def _get_default_metrics(loss_type):
-        defaults = {
-            'regression': ['mae'],
-            'classification': ['accuracy'],
-            'binary_classification': ['accuracy']
-        }
-        return defaults.get(loss_type, ['mae'])
-
-
 class TimeSeriesPostProcessor:
     """
     功能：
@@ -523,7 +401,7 @@ class TimeSeriesPostProcessor:
                             'pickle_type': 'cloudpickle',
                             'params': transformer.get_params() if hasattr(transformer, 'get_params') else {}
                         }
-                        logger.info(f"成功使用 cloudpickle 序列化 {pipe_name}.{step_name}")
+                        logger.debug(f"成功使用 cloudpickle 序列化 {pipe_name}.{step_name}")
 
                     except Exception as e:
                         logger.info(f"cloudpickle 序列化失败{pipe_name}.{step_name}:{e}")
@@ -583,7 +461,7 @@ class TimeSeriesPostProcessor:
         logger.info(f"Pipeline状态已保存到: {state_file}")
         return save_data
 
-    def custom_inverse_transform(self, raw_predictions: Dict, task_config, use_saved,output_width, **kwargs):
+    def custom_inverse_transform(self, raw_predictions: Dict, task_config, use_saved, output_width, **kwargs):
         """
         智能逆转换：根据情况选择使用内存引用或保存的状态
         支持多预测的逆转换
@@ -615,18 +493,18 @@ class TimeSeriesPostProcessor:
             多步预测:
             1.回归 (batch,output_width,1) ；二分类(batch,output_width,1)->可压缩->2D
             2.多分类(batch,output_width,num_classes) -> 不压缩->保持3D（ argmax ->2D)
-            
+
             单步预测：
             1.回归（batch,1) ；二分类(batch,1)？->不压缩->2D
             2.多分类(batch,1,num_classes) -> 不压缩->保持3D（argmax->2D)
-            
+
             逆标准化器：保证接受2D；
             逆编码器：保证接受3D，内部转换2D操作；
             """
             if output_width > 1:
                 if task_type in ['regression', 'binary_classification']:
                     if task_pred.shape[-1] == 1:  # 去除冗余的最后一个维度(samples, output_width,1)
-                        task_pred = np.squeeze(task_pred,axis =-1)
+                        task_pred = np.squeeze(task_pred, axis=-1)
                         logger.debug(f"[INFO] regression任务{task_name}去除冗余后: {task_pred.shape}")
 
             if not use_saved and hasattr(self, '_temp_preprocessor'):
@@ -840,8 +718,6 @@ class TimeSeriesPostProcessor:
 
         return results_df, predictions
 
-
-
     def calculate_mape(self, pred_data: pd.DataFrame, original_data: pd.DataFrame):
 
         time_col_name = self.config.get('time_col_name')
@@ -865,31 +741,130 @@ class TimeSeriesPostProcessor:
         return step_res
 
 
-# # def save_state(self, save_dir):
-# #     """保存后处理器状态（用于场景2、3）"""
-# #     os.makedirs(save_dir, exist_ok=True)
-# #
-# #     # 1. 保存状态
-# #     state_file = os.path.join(save_dir, 'postprocessor_state.pkl')
-# #     with open(state_file, 'wb') as f:
-# #         pickle.dump({
-# #             'config': self.config,
-# #             'pipeline_states': self.serialized_states,
-# #             'scaler_states': self.scaler_states,
-# #             'saved_at': datetime.now().isoformat()
-# #         }, f)
-# #
-# #     # 2. 保存配置
-# #     config_file = os.path.join(save_dir, 'postprocessor_config.json')
-# #     with open(config_file, 'w') as f:
-# #         json.dump(self.config, f, indent=2)
-# #
-# #     logger.info(f"后处理器状态已保存到: {save_dir}")
-# #
+class EmbeddingConfig:
+    """Embedding维度选择配置"""
 
-#
+    @staticmethod
+    def get_embedding_dim(n_categories: int) -> int:
+        if n_categories <= 2:
+            return 1  # 二分类
+        elif n_categories <= 5:
+            return max(1, min(2, n_categories - 1))  # 小类别
+        elif n_categories <= 10:
+            return 3  # 中等类别
+        elif n_categories <= 20:
+            return 4  # 较大类别
+        elif n_categories <= 50:
+            return 6  # 大类别
+        else:
+            # 谷歌研究公式：1.6 * n_categories^0.56
+            return min(50, int(1.6 * n_categories ** 0.56))  # 保守的公式 min(8, int(0.8 * n_categories ** 0.4))
 
-#
+    @staticmethod
+    def should_use_embedding(n_categories: int, unique_ratio: float) -> bool:
+        """
+        判断是否应该使用Embedding
+        unique_ratio: 唯一值数量 / 总样本数
+        """
+
+        if n_categories <= 5:
+            return unique_ratio < 0.1
+        elif n_categories <= 20:  # 高基数或中等基数都推荐使用Embedding
+            return unique_ratio < 0.3
+        else:
+            return unique_ratio < 0.5
+
+    @staticmethod
+    def _get_embedding_info(dataset: pd.DataFrame, cat_cols: list):
+        embedding_configs: Dict[str, Dict[str, Any]] = {}
+
+        if cat_cols and isinstance(dataset, pd.DataFrame):
+
+            for col in cat_cols:
+                series = dataset[col].dropna()
+                n_categories = int(series.nunique())
+                unique_ratio = n_categories / len(series)
+
+                base_config: Dict[str, Any] = {
+                    'input_dim': n_categories + 1,  # 已经预留了一个__UNKNOWN__ 不代表训练集就有n+1个种类，算的是(实际数据集中的种类数+1)
+                    'name': f'embedding_{col}'
+                }
+
+                if EmbeddingConfig.should_use_embedding(n_categories, unique_ratio):
+                    base_config['output_dim'] = EmbeddingConfig.get_embedding_dim(n_categories)
+
+                    # 自动添加正则化
+                    if n_categories <= 10:  # 小到中等类别
+                        base_config['embeddings_regularizer'] = l2(0.001)
+
+                else:  # 轻量Embedding
+                    base_config.update({
+                        'output_dim': max(1, min(2, n_categories // 20)),
+                        'embeddings_regularizer': l2(0.1)  # 强正则化(output_dim 从3->1)
+                    })
+                embedding_configs[col] = base_config
+
+            return embedding_configs
+
+
+class ModelConfigManager:
+    """统一管理模型配置的辅助类"""
+
+    @staticmethod
+    def get_loss_config(model_config):
+        # 单和多输出，都是字典
+        output_config = model_config.get('output_config', {})
+
+        output_names = list(output_config.keys())
+        loss_config = {}
+        for output_name in output_names:
+            cfg = output_config.get(output_name, {})
+            loss_type = cfg.get('type', 'regression')
+            loss_config[output_name] = cfg.get('loss', ModelConfigManager._get_default_loss(loss_type))
+        return loss_config
+
+    @staticmethod
+    def get_metrics_config(model_config):
+        output_config = model_config.get('output_config', {})
+
+        output_names = list(output_config.keys())
+        metrics_config = {}
+        for output_name in output_names:
+            cfg = output_config.get(output_name, {})
+            loss_type = cfg.get('type', 'regression')
+            metrics = cfg.get('metrics', ModelConfigManager._get_default_metrics(loss_type))
+            metrics_config[output_name] = metrics if isinstance(metrics, list) else [metrics]
+
+        return metrics_config
+
+    @staticmethod
+    def get_loss_weights_config(model_config):
+        output_config = model_config.get('output_config', {})
+
+        output_names = list(output_config.keys())
+        loss_weights = {}
+        for output_name in output_names:
+            cfg = output_config.get(output_name, {})
+            loss_weights[output_name] = cfg.get('loss_weights', 1.0)
+        return loss_weights
+
+    @staticmethod
+    def _get_default_loss(loss_type):
+        defaults = {
+            'regression': 'mse',
+            'classification': 'sparse_categorical_crossentropy',
+            'binary_classification': 'binary_crossentropy'
+        }
+        return defaults.get(loss_type, 'mse')
+
+    @staticmethod
+    def _get_default_metrics(loss_type):
+        defaults = {
+            'regression': ['mae'],
+            'classification': ['accuracy'],
+            'binary_classification': ['accuracy']
+        }
+        return defaults.get(loss_type, ['mae'])
 
 
 class MetricsCalculator:
@@ -905,27 +880,21 @@ class MetricsCalculator:
         for tk in task_names:
             mask = data[tk].notna() & (data[tk] != 0)
             data[f'ape_{tk}'] = np.nan
-            data.loc[mask, f'ape_{tk}'] = np.round(np.abs(data.loc[mask, f'{tk}_pred'] - data.loc[mask, tk]) / np.abs(data.loc[mask, tk]) * 100, 4)
+            data.loc[mask, f'ape_{tk}'] = np.round(
+                np.abs(data.loc[mask, f'{tk}_pred'] - data.loc[mask, tk]) / np.abs(data.loc[mask, tk]) * 100, 4)
 
         return data
 
     @staticmethod
-    def calc_hierarchical_metrics(predictions, actual_data: pd.DataFrame, input_width: int, shift: int,
-                                  time_column: str = None,
-                                  level: str = 'O'):
+    def predictions_by_time(predictions, actual_data: pd.DataFrame, input_width: int, shift: int,
+                            time_column: str = None,
+                            level: str = 'o'):
         """""""""
-        业务指标 MAPE： 
-            按业务关心的颗粒度（时间点）先处理统计对，再计算
-        技术指标 MSE MAE：
-            最基本的计算单元是每个预测值与其对应实际值的比较。无论什么层级，最终都是这些基础对的统计。
+         mape 先处理统计对，再计算
         ---------------------------
-        单时间点 mape + 整体 mape + 日级别 mape
-        1. 单时间点：某时间点在预测中出现多次，先求预测的均值，再和actual_data的时间点进行计算；
-        2. 日级别：聚合某日内所有预测时间点，再整理actual_data的日级别真实值，求ape，MAPE为同级别所有ape的均值mean(ape);
-       
 
         参数：
-        predictions ： 需要经过逆转换处理 {task_name: predictions}的格式 ,每个任务有滑动窗口按需处理
+        predictions ： 需要经过逆转换处理 {task_name: predictions}的格式 Mape / 或者未逆标准化的MAE MSE计算。每个任务有滑动窗口按需处理
         actual_data：原始的数据取对应的时间列 + 任务列，
         level: ‘D’ 代表 日级别 ,‘O' 单时间点级别，‘M’月级别
         shift:预测偏移
@@ -964,72 +933,79 @@ class MetricsCalculator:
                     if target_idx < len(historical_timestamps):
                         predictions_by_time[time_point].append(pred_value)  # value是表
 
-            # 2 mape
-            mape_ = MetricsCalculator._calc_hierarchical_mape(predictions_by_time, actual_data, level, tk, time_column)
-            result[tk] = {'mape': mape_}
-
-            MAE, MSE, RMSE, pairs, mae_mse_ = MetricsCalculator._calc_hierarchical_mae_mse(predictions_by_time,
-                                                                                           actual_data,
-                                                                                           level, tk)
-            logger.info(f'整体数据的MAE：{MAE},MSE:{MSE},RMSE:{RMSE}')
-
-            result[tk].update({'mae_mse': mae_mse_, 'pairs_mse_mae': pairs})
-
-            # pairs 是时间点明细
-            file = f'/Users/shibo/Python/NeuralNetwork/temperature_forecasting/data/intermediate/{tk}_metrics.xlsx'
-            sheet_data = {
-                'mape': mape_.get(f'details_{level}'),
-                'mse_mae': mae_mse_,
-            }
-            with pd.ExcelWriter(file, engine='openpyxl') as writer:
-                for sheet_name, df in sheet_data.items():
-                    df.to_excel(writer, sheet_name=sheet_name)
+            result[tk] = predictions_by_time
 
         return result
 
     @staticmethod
-    def _calc_hierarchical_mae_mse(predictions_by_time: Dict, actual_data, level: str, tk: str):
+    def mape_calculator(predictions: Dict, actual_data: pd.DataFrame, input_width: int, shift: int,
+                        time_column: str = None,
+                        level: str = 'o'):
+        """""""""      
+        A.业务指标MAPE：
+            逆标准化后的 predictions（predictions_by_time 字典）
+            单时间点 mape + 整体 mape + 日级别 mape
+            1. 单时间点：某时间点在预测中出现多次，先求预测的均值，再和actual_data的时间点进行计算；
+            2. 日级别：聚合某日内所有预测时间点，再整理actual_data的日级别真实值，求ape，MAPE为同级别所有ape的均值mean(ape);
         """
-        predictions_by_time: {时间点索引: [该时间点的所有预测值]}
-        actual_data: 原数据DF，每个时间点的实际值
-        所有预测-实际对 pairs 直接计算
+
+        predictions_by_time = MetricsCalculator.predictions_by_time(predictions=predictions, actual_data=actual_data,
+                                                                    input_width=input_width,
+                                                                    shift=shift, time_column=time_column, level=level)
+        result_mape = {}
+        for tk, pred in predictions_by_time.items():
+            mape_ = MetricsCalculator._calc_hierarchical_mape(pred, actual_data, level, tk, time_column)
+            result_mape[tk] = mape_
+
+        return result_mape
+
+    @staticmethod
+    def mae_mse_calculator(predictions: Dict, actual_data: pd.DataFrame, input_width: int, shift: int,
+                           time_column: str = None,
+                           level: str = 'o'):
+        """""""""
+        B.技术指标 MSE MAE：
+          仍然是[标准化]的 predictions_by_time 字典
+          最基本的计算单元是每个预测值与其对应实际值的比较(标准化状态下的）。无论什么层级，最终都是这些基础对的统计。
         """
-        actual_data = actual_data[tk].values
-        pairs_res = []  # 所有样本(pairs)带有时间点的计算结果
 
-        for i, (time_point, pred_list) in enumerate(predictions_by_time.items()):
-            if i < len(actual_data):
-                actual = actual_data[i]
+        predictions_by_time = MetricsCalculator.predictions_by_time(predictions=predictions, actual_data=actual_data,
+                                                                    input_width=input_width,
+                                                                    shift=shift, time_column=time_column, level=level)
 
-                for pred in pred_list:
-                    abs_error = abs(pred - actual)
-                    squared_error = (pred - actual) ** 2
-                    pairs_res.append(
-                        {'timepoint': time_point,
-                         'abs_error': abs_error,
-                         'squared_error': squared_error,
-                         })
+        result_mae_mse = {}
+        for tk, pred in predictions_by_time.items():  # pairs 是时间点明细
+            MAE, MSE, RMSE, pairs, mae_mse_ = MetricsCalculator._calc_hierarchical_mae_mse(pred,
+                                                                                           actual_data,
+                                                                                           level, tk)
+            logger.info(f'任务{tk}整体数据的MAE：{MAE},MSE:{MSE},RMSE:{RMSE}')
 
-        pairs_df = pd.DataFrame(pairs_res)
+            result_mae_mse[tk] = mae_mse_
 
-        if level.lower() == 'o':
-            pairs_df = pairs_df.rename(columns={'timepoint': 'level'})
-        elif level.lower() == 'd':
-            pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[D]')
-        elif level.lower() == 'm':
-            pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[M]')
-        else:
-            pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[Y]')
+        return result_mae_mse
 
-        hierarchical_metrics = pairs_df.groupby('level').agg(mae=('abs_error', 'mean'),  # mae
-                                                             mse=('squared_error', 'mean'),
-                                                             rmse=('squared_error', lambda x: np.sqrt(x.mean())  # rmse
-                                                                   ))
-        MAE = pairs_df['abs_error'].mean()
-        MSE = pairs_df['squared_error'].mean()
-        RMSE = np.sqrt(MSE)
-        logger.info(f"整个数据集MAE：{MAE:.4f},MSE:{MSE:.4f},RMSE:{RMSE:.4f}")
-        return MAE, MSE, RMSE, pairs_df, hierarchical_metrics
+    @staticmethod
+    def download_data(result_mae_mse: Dict, result_mape: Dict, level_mae_mse: str, level_mape: str):
+        """1个任务一个工作簿，1个指标占1个sheet"""
+        if level_mae_mse.lower() != level_mape.lower():
+            logger.warning(f"mae_mse 计算指标维度不统一")
+
+        for tk, result in result_mae_mse.items():
+            file = f'/Users/shibo/Python/NeuralNetwork/temperature_forecasting/data/intermediate/{tk}_metrics.xlsx'
+
+            if tk in result_mape.keys():
+                _mape = result_mape.get(tk)
+                mape = _mape.get(f'details_{level_mape}')
+                mae_mse = result
+
+                sheet_data = {
+                    'mape': mape,
+                    'mae_mse': mae_mse
+                }
+
+                with pd.ExcelWriter(file, engine='openpyxl') as writer:
+                    for sheet_name, df in sheet_data.items():
+                        df.to_excel(writer, sheet_name=sheet_name)
 
     @staticmethod
     def _calc_hierarchical_mape(predictions_by_time: Dict, actual_data: pd.DataFrame, level: str, tk: str,
@@ -1101,7 +1077,7 @@ class MetricsCalculator:
             level_mape, level_details = MetricsCalculator.calc_mape(level_prediction_data, level_actual_data[tk])
             daily_analyze = MetricsCalculator.analyze_mape(details=level_details)
 
-            logger.info(f"该级别的mape:{level_mape}")
+            logger.info(f"该{level}级别的mape:{level_mape}")
             result = {
                 f'details_{level}': level_details,
                 f'mape_analyze_{level}':
@@ -1169,8 +1145,8 @@ class MetricsCalculator:
 
             if not outliers.empty:
                 hour_counts = outliers['timestamp'].apply(lambda x: x.hour).value_counts().to_dict()
-                month_counts = outliers['timestamp'].apply(lambda x:x.month).value_counts().to_dict()
-                year_counts = outliers['timestamp'].apply(lambda x:x.year).value_counts().to_dict()
+                month_counts = outliers['timestamp'].apply(lambda x: x.month).value_counts().to_dict()
+                year_counts = outliers['timestamp'].apply(lambda x: x.year).value_counts().to_dict()
 
                 patterns = {
                     'count': int(high_mask.sum()),
@@ -1226,6 +1202,49 @@ class MetricsCalculator:
                     'spike_count': spike_mask.sum()}
 
         return patterns, consecutive_errors, weaknesses
+
+    @staticmethod
+    def _calc_hierarchical_mae_mse(predictions_by_time: Dict, actual_data, level: str, tk: str):
+        """ 标准化数据
+        predictions_by_time: {时间点索引: [该时间点的所有预测值]}
+        actual_data: 原数据DF，每个时间点的实际值
+        所有预测-实际对 pairs 直接计算
+        """
+        actual_data = actual_data[tk].values
+        pairs_res = []  # 所有样本(pairs)带有时间点的计算结果
+
+        for i, (time_point, pred_list) in enumerate(predictions_by_time.items()):
+            if i < len(actual_data):
+                actual = actual_data[i]
+
+                for pred in pred_list:
+                    abs_error = abs(pred - actual)
+                    squared_error = (pred - actual) ** 2
+                    pairs_res.append(
+                        {'timepoint': time_point,
+                         'abs_error': abs_error,
+                         'squared_error': squared_error,
+                         })
+
+        pairs_df = pd.DataFrame(pairs_res)
+
+        if level.lower() == 'o':
+            pairs_df = pairs_df.rename(columns={'timepoint': 'level'})
+        elif level.lower() == 'd':
+            pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[D]')
+        elif level.lower() == 'm':
+            pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[M]')
+        else:
+            pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[Y]')
+
+        hierarchical_metrics = pairs_df.groupby('level').agg(mae=('abs_error', 'mean'),  # mae
+                                                             mse=('squared_error', 'mean'),
+                                                             rmse=('squared_error', lambda x: np.sqrt(x.mean())  # rmse
+                                                                   ))
+        MAE = pairs_df['abs_error'].mean()
+        MSE = pairs_df['squared_error'].mean()
+        RMSE = np.sqrt(MSE)
+        return MAE, MSE, RMSE, pairs_df, hierarchical_metrics
 
 
 if __name__ == '__main__':
@@ -1301,6 +1320,6 @@ if __name__ == '__main__':
     print(step_res.head(50))
 
     # 逐时间点timepoint / 整体mape / 日级别 mape
-    mape_dict = MetricsCalculator.calc_hierarchical_metrics(predictions=predictions, actual_data=no_scaled_data.copy(),
-                                                            level='o',shift =24,input_width=6)
+    mape_dict = MetricsCalculator.predictions_by_time(predictions=predictions, actual_data=no_scaled_data.copy(),
+                                                      input_width=6, shift=24, level='o')
     logger.debug(f"mape_dict含有的任务：{mape_dict.keys}")

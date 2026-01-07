@@ -1,34 +1,64 @@
 import logging
-
 logger = logging.getLogger(__name__)
 from evaluation.model_visualization import history_plot
 import os
-
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0=全部显示, 1=隐藏INFO, 2=隐藏WARNING, 3=隐藏ERROR
 import tensorflow as tf
-
 tf.get_logger().setLevel('ERROR')  # 设置TensorFlow日志级别
 tf.autograph.set_verbosity(0)  # 关闭AutoGraph详细日志
 
 # 同时设置absl日志（TensorFlow使用的）
 import absl.logging
-
 absl.logging.set_verbosity(absl.logging.ERROR)
 import datetime
 import contextlib
 import sys
 import io
+import re
+
+class SimpleTrainingManager:
+    """继续训练管理器"""
+    def __init__(self,experiment_dir=None):
+        self.experiment_dir = experiment_dir
+
+    def load_latest_checkpoint(self,model):
+        if not self.experiment_dir:
+            return 0
+        checkpoint_dir = os.path.join(self.experiment_dir,'tf_checkpoints')
+        if not os.path.exists(checkpoint_dir):
+            return 0
+
+        latest_epoch =0
+        latest_checkpoint =None
+
+        for item in os.listdir(checkpoint_dir):
+            if item.startswith('model_epoch_'):
+                try:
+                    epoch = int(re.search(r'epoch_(\d+)',item).group(1))
+                    checkpoint = os.path.join(checkpoint_dir,f'model_epoch_{epoch}')
+                    if epoch > latest_epoch and os.path.exists(os.path.join(checkpoint,'model.keras')):
+                        latest_epoch = epoch
+                        latest_checkpoint = checkpoint
+                except:
+                    continue
+
+        if latest_checkpoint:
+            logger.debug(f"加载检查点 Epoch{latest_epoch} ")
+            keras_file = os.path.join(latest_checkpoint,'model.keras')
+            loaded_model = tf.keras.models.load_model(keras_file)
+            model.set_weights(loaded_model.get_weights())
+
+        return latest_epoch
 
 
 def TrainingSingleModel(model_name: str,
-                  model,  # tf.keras.models
-                  trainset,  # x,y
-                  valset,
-                  weights_dir,  # 目录
-                  epochs: int = 20,  # 总轮数
-                  verbose: int = 2,
-                  ):
-
+                        model,  # tf.keras.models
+                        trainset,  # x,y
+                        valset,
+                        weights_dir,  # 目录
+                        epochs: int = 20,  # 总轮数
+                        verbose: int = 2,
+                        ):
     '''训练后，bash 查看 tensorboard --logdir=~/Python/NeuralNetwork/weights/logs'''
 
     # 处理数据形状
@@ -52,7 +82,6 @@ def TrainingSingleModel(model_name: str,
 
     trainset = trainset.map(safe_map_function)
     valset = valset.map(safe_map_function)
-
 
     # 确保权重保存目录存在
     os.makedirs(weights_dir, exist_ok=True)
@@ -185,16 +214,15 @@ def TrainingSingleModel(model_name: str,
     return record, best_model_path
 
 
-
-
 def TrainingMultiModel(model_name: str,
-                  model,  # tf.keras.models
-                  trainset,  # x,y
-                  valset,
-                  weights_dir,  # 目录
-                  epochs: int = 20,  # 总轮数
-                  verbose: int = 2,
-                  ):
+                       model,  # tf.keras.models
+                       trainset,  # x,y
+                       valset,
+                       weights_dir,  # 目录
+                       epochs: int = 20,  # 总轮数
+                       verbose: int = 2,
+                       continue_from_experiment: str = None
+                       ):
     '''训练后，bash 查看 tensorboard --logdir=~/Python/NeuralNetwork/weights/logs'''
 
     # 确保权重保存目录存在
@@ -203,6 +231,14 @@ def TrainingMultiModel(model_name: str,
     # 创建TF分片格式目录
     tf_checkpoint_dir = os.path.join(weights_dir, 'tf_checkpoints')
     os.makedirs(tf_checkpoint_dir, exist_ok=True)
+
+    # ============继续训练逻辑===============
+    initial_epoch = 0
+    if continue_from_experiment:
+        manager = SimpleTrainingManager(continue_from_experiment)
+        initial_epoch = manager.load_latest_checkpoint(model)
+        logger.debug(f"从Epoch {initial_epoch} 开始训练，总共 {epochs} 轮")
+    # ===========================================
 
     # 存储最佳模型信息
     best_val_loss = float('inf')  # 初始化为正无穷大，每轮寻找最小值
@@ -231,7 +267,7 @@ def TrainingMultiModel(model_name: str,
                             and item != current_epoch_dir):  # 排除当前目录
                         shutil.rmtree(item_path)
 
-                checkpoint_dir = os.path.join(self.checkpoint_dir, current_epoch_dir) # 用目录格式并确保路径以斜杠结尾
+                checkpoint_dir = os.path.join(self.checkpoint_dir, current_epoch_dir)  # 用目录格式并确保路径以斜杠结尾
                 os.makedirs(checkpoint_dir, exist_ok=True)  # 必须创建目录
 
                 @contextlib.contextmanager
@@ -256,7 +292,7 @@ def TrainingMultiModel(model_name: str,
                     self.model.save(keras_path)  # 默认就是.keras格式
 
                     # 2. 保存为SavedModel格式（用于部署）
-                    export_path = os.path.join(checkpoint_dir,'saved_model')
+                    export_path = os.path.join(checkpoint_dir, 'saved_model')
                     self.model.export(export_path)
 
                 best_model_path = checkpoint_dir  # 直接赋值给外层变量
@@ -269,6 +305,7 @@ def TrainingMultiModel(model_name: str,
         trainset,
         validation_data=valset,
         epochs=epochs,
+        initial_epoch = initial_epoch, # 支持从指定epoch开始
         verbose=verbose,  # 设置日志显示，0为不在标准输出流输出日志信息，1为输出进度条记录 2 epoch每轮输出一行记录
         callbacks=[
             # 早停：防止过拟合
@@ -323,7 +360,6 @@ def TrainingMultiModel(model_name: str,
     save_dir = os.path.expanduser("~/Python/NeuralNetwork/temperature_forecasting/data/pics/")
     history_plot(history=record, model_name=model_name, save_dir=save_dir)
 
-
     return record, best_model_path
 
 # 一般训练规律 损失值：
@@ -342,3 +378,5 @@ def TrainingMultiModel(model_name: str,
 # train accuracy 趋于不变   validation accuracy 趋于不变---网络陷入瓶颈，减小学习率（自适应效果不大）和batch数量减少
 # train accuracy 不断下降   validation loss 不断下降---网络结构问题，训练超参数设置不当，数据集需要清洗等
 # train accuracy 不断下降   validation loss 不断上升---数据集有问题，建议重新选择
+
+

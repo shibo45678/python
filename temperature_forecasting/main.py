@@ -21,7 +21,7 @@ from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, D
                                    CategoricalMissingValueHandler,
                                    ColumnsTypeIdentify,
                                    ConvertCategoricalColumns,
-                                   ConvertNumericColumns, ProcessTimeseriesColumns)
+                                   ConvertNumericColumns, ProcessTimeseriesColumns, ProcessContinuous)
 from data.data_preprocessing import SimpleTimeSampler
 from data.feature_engineering import (GenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
                                       UnifiedFeatureScaler, CategoricalEncoding)
@@ -94,8 +94,8 @@ def main():
     scaling_config = {
         'transformers': [
             {'standard': {
-                'columns': ['p', 'Tpot', 'Tdew', 'wv_x', 'wv_y', 'max. wv_x', 'max. wv_y','rh', 'VPmax', 'Vpact', 'VPdef', 'sh', 'H2OC', 'rho']}},
-            {'minmax': {'columns': [], 'feature_range': (-1, 1)}},
+                'columns': ['p', 'Tpot', 'Tdew', 'wv_x', 'wv_y', 'max. wv_x', 'max. wv_y', ]}},
+            {'minmax': {'columns': ['rh', 'VPmax', 'Vpact', 'VPdef', 'sh', 'H2OC', 'rho'], 'feature_range': (-1, 1)}},
             # 相同方法，相同其他参数配置，在columns列表填写
             {'minmax': {'columns': ['timedelta'], 'feature_range': (0, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
             {'robust': {'columns': [], 'quantile_range': (10, 90)}}
@@ -107,10 +107,10 @@ def main():
 
     # 先初始化 再延迟计算（lazy evaluation）
     preparation_configs = [
-        {'obj_list': [DescribeData(log_level="DEBUG"), DeleteUselessCols(),
-                      ProcessTimeseriesColumns(interactive=False)], 'len_change': False},
+        {'obj_list': [DescribeData(log_level="DEBUG"), DeleteUselessCols()], 'len_change': False},
         {'obj_list': [RemoveDuplicates(download_config=download_duplicates_config)], 'len_change': True},
         {'obj_list': [ColumnsTypeIdentify(),
+                      ProcessTimeseriesColumns(interactive=False),
                       ConvertCategoricalColumns(categorical_columns=[]),
                       ConvertNumericColumns(preserve_object_integer_types=True, exclude_cols=['Date Time']),
                       ProblemColumnsFixed(problem_columns=['wv']), SpecialColumnsFixed(problem_columns=['T']),  # wv 一样
@@ -131,7 +131,7 @@ def main():
                       BasedOnCorrSelector(pass_through=True),
                       UnifiedFeatureScaler(method_config=scaling_config, algorithm='lstm'),  # 自动根据数据分布及算法类型进行推荐标准化
                       CategoricalEncoding(handle_unknown='ignore', unknown_token='__UNKNOWN__'),
-                      VisualizationForNeural(pass_through=True),
+                      VisualizationForNeural(pass_through=False),
                       ], 'len_change': False},
     ]
 
@@ -140,14 +140,17 @@ def main():
     raw_data = loader.learn_process()
 
     # 2. 数据集分割
-    splitter = TimeSeriesSplitter(train_size=0.8, val_size=0.15, test_size=0.05, shuffle=False)
+    splitter = TimeSeriesSplitter(train_size=0.6, val_size=0.2, test_size=0.2, shuffle=False)
     df_train, df_val, df_test = splitter.learn_process(raw_data)
     logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
+
+    # 调整测试集样本量 （保证时间连续性，逆转换时间列匹配）
+    continuous = ProcessContinuous(interactive=False, create_extract_continuous=True)
+    df_test_adjust, _ = continuous.learn_process(df_test, y=None)  # 只选择连续的样本集
 
     # 3. 数据预处理(生成训练、验证、预测数据）
     preprocessor = CompletePreprocessor(preparation_configs)
     features_temp_train, _ = preprocessor.train(features=df_train, labels=None)
-
     # # 立即检查状态
     # logger.debug("=== 训练后立即检查 ===")
     # for name, pipeline in preprocessor.pipelines_.items():
@@ -167,11 +170,11 @@ def main():
     #             logger.debug(f"    ✗ {step_name} 未拟合: {e}")
 
     features_temp_val, _ = preprocessor.transform_predict(features=df_val, labels=None)
-    features_temp_test, _ = preprocessor.transform_predict(features=df_test, labels=None)
+    features_temp_test, _ = preprocessor.transform_predict(features=df_test_adjust, labels=None)
 
     num_cols = preprocessor.get_specific_attribute(4, 'engineer_3', 'numeric_columns_')  # 取第5个class的第4步的属性
     cat_cols = preprocessor.get_specific_attribute(4, 'engineer_4', 'categorical_columns_')
-    time_col = preprocessor.get_specific_attribute(0, 'engineer_2', 'valid_time_column_')
+    time_col = preprocessor.get_specific_attribute(2, 'engineer_1', 'valid_time_column_')
 
     # 4. 并行模型训练、评估
     # single_base_model_config = {'numeric_columns': num_cols,
@@ -228,19 +231,19 @@ def main():
         'learning_rate': 0.00035,
         'units': [192],  # len控制lstm的层数
         'return_sequences': [False],
-        'epochs': 3,
-        'verbose': 2
+        'epochs': 30,
+        'verbose': 2,
+        # 'continue_from': '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm1_20260106_202506'# 指定目录
     }}
 
     data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
 
     # 准备指标计算数据（回测用，预测不用） 采样后的原数据
-    df_test = preprocessor.get_specific_step(0, 'engineer_2').transform(df_test)
-    valid_df_test, _ = preprocessor._get_step(3, 0).process(df_test)  # 获取自定义cleaner实例 （第4个class,第0个实例)
+    valid_df_test, _ = preprocessor._get_step(3, 0).process(df_test_adjust)  # 处理连续性测试集的采样步骤（第4个class,第0个实例) 采样
 
     # 并行训练和预测
     def train_single_config(config, X, y, preprocessor, data,
-                            save_dir=None, calc_metrics=True, no_scaled_data=None):
+                            save_dir=None, calc_metrics=True, original_data_no_scaled=None, original_data_scaled=None):
         """
         单个模型的训练和预测流程
 
@@ -249,9 +252,10 @@ def main():
             X: 训练数据（字典-训练数据和验证数据）
             y: 标签（可能为None）
             preprocessor: 预处理器对象,提取逆转换pipeline步骤
-            historical_timestamps: 历史时间戳，用于预测结果展示
-            no_scaled_data: 测试 / 新数据（用于一次回测 计算指标
             save_dir: 保存目录，如果为None则不保存
+            original_data_no_scaled : 测试集计算指标 的原数（mape:时间列采样/连续性处理）
+            original_data_scaled:测试集计算指标 的原数据（mae,mse:时间列采样/连续性处理/标准化）
+
         Returns:
             dict: 包含模型、预测结果和postprocessor
         """
@@ -311,30 +315,38 @@ def main():
             logger.info(f"最终预测结果:{final_pred_results}")
             logger.info(f"最终预测结果形状: {final_pred_results.shape}")
 
-            # 7. mape
+            # 7. mape 业务 / mse mae 技术
             if calc_metrics:
                 # 逐步step
                 step_mape = postprocessor.calculate_mape(
                     pred_data=final_pred_results,
-                    original_data=no_scaled_data.copy(),
+                    original_data=original_data_no_scaled.copy(),
                 )
                 logger.debug(f"预测结果和原数据合并表：{step_mape.tail(10)}")
 
                 # 逐时间点timepoint / 各级别 mape mse mae
-                mape_dict = MetricsCalculator.calc_hierarchical_metrics(predictions=predictions_dict,
-                                                                        actual_data=no_scaled_data.copy(),
-                                                                        input_width=config.get('input_width'),
-                                                                        shift=config.get('shift'),
-                                                                        level='o')  # 原始时间点维度
-                logger.debug(f"mape_dict含有的任务：{mape_dict.keys}")
+                mape_dict = MetricsCalculator.mape_calculator(predictions=predictions_dict,  # 逆标准化数据
+                                                              actual_data=original_data_no_scaled.copy(),  # 原数据
+                                                              input_width=config.get('input_width'),
+                                                              shift=config.get('shift'), level='o',
+                                                              time_column=config.get('time_column', 'Date Time'))
+
+                mae_mse_dict = MetricsCalculator.mae_mse_calculator(predictions=raw_predictions,  # 注意是标准化数据
+                                                                    actual_data=original_data_scaled.copy(),  # 标准化原数据
+                                                                    input_width=config.get('input_width'),
+                                                                    shift=config.get('shift'), level='o',
+                                                                    time_column=config.get('time_column', 'Date Time'))
+
+                MetricsCalculator.download_data(result_mae_mse=mae_mse_dict, result_mape=mape_dict, level_mae_mse='o',
+                                                level_mape='o')
 
             # 8. 保存状态
-            predict_window_,predict_window_config = model._forecast_window_generator()
-            best_checkpoint = model.best_checkpoint # 'saved_model/multi_lstm1_20260104_143043/tf_checkpoints/model_epoch_2/'
+            predict_window_, predict_window_config = model._forecast_window_generator()
+            best_checkpoint = model.best_checkpoint  # 'saved_model/multi_lstm1_20260104_143043/tf_checkpoints/model_epoch_2/'
 
             if save_dir:
                 deployment = DeploymentManager(
-                    model_name = config['model_type'],
+                    model_name=config['model_type'],
                     bestpoint=best_checkpoint,
                     preprocessor=preprocessor,
                     postprocessor=postprocessor,
@@ -373,7 +385,8 @@ def main():
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(train_single_config, config, X=data, y=None, preprocessor=preprocessor,
                                    data=features_temp_test,  # 预处理后的测试集数据
-                                   no_scaled_data=valid_df_test,  # 预处理前的测试集数据（但已经处理过时间）
+                                   original_data_no_scaled=valid_df_test,  # 预处理前的测试集数据（时间列处理，采样）
+                                   original_data_scaled=features_temp_test,  # 预处理后的测试集数据（时间列处理，采样，标准化）
                                    save_dir='/Users/shibo/Python/NeuralNetwork/saved_model_state')
                    for config in configs]
 
@@ -396,9 +409,6 @@ if __name__ == "__main__":
 
     matplotlib.use('Agg')
     main()
-
-
-
 
 # save的节点 是否是最佳模型
 # 多变量输出 如何协调权重，以及梯度剪裁
