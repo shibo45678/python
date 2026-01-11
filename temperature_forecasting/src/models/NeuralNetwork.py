@@ -76,7 +76,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         #  构建模型 （神经网络预处理已经返回了模型期望的正确格式，不copy）
         # 1.1 获得embedding_info
-        self.embedding_info = EmbeddingConfig._get_embedding_info(train_datasets_,  # 原始DF
+        self.embedding_info_ = EmbeddingConfig._get_embedding_info(train_datasets_,  # 原始DF
                                                                   self.model_config['categorical_columns']
                                                                   )
 
@@ -90,14 +90,14 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
             if self.model_config['model_type'].startswith('multi_lstm'):
                 lstm_model_config = {**self.model_config,
-                                     'embedding_configs': self.embedding_info}
+                                     'embedding_configs': self.embedding_info_}
                 lstm_model = MultiTasksLstmModel(lstm_model_config)
                 lstm_model_ = lstm_model._build_lstm_model()
                 self.training_model_ = lstm_model_
 
             elif self.model_config['model_type'].startswith('multi_cnn'):
                 cnn_model_config = {**self.model_config,  # 解包
-                                    'embedding_configs': self.embedding_info}  # 追加
+                                    'embedding_configs': self.embedding_info_}  # 追加
                 cnn_model = MultiTasksCnnModel(architecture_type='enhance_parallel', config=cnn_model_config)
                 cnn_model_ = cnn_model._build_cnn_model()
                 self.training_model_ = cnn_model_
@@ -121,7 +121,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         else:
             if self.model_config['model_type'].startswith('single_lstm'):
                 lstm_model_config = {**self.model_config,
-                                     'embedding_configs': self.embedding_info}
+                                     'embedding_configs': self.embedding_info_}
                 lstm_model = SingleTaskLstmModel(lstm_model_config)
                 lstm_model_ = lstm_model._build_lstm_model()
                 self.training_model_ = lstm_model_

@@ -927,3 +927,40 @@ class DeploymentModel:
         df['bucket_correct'] = df.groupby('abc')['num'].transform(group_cut)
         print("\n正确：分组内独立分桶:")
         print(df[['abc', 'num', 'bucket_correct']])
+
+
+
+
+        if not hasattr(self, 'encoders_') or self.encoders_ is None:
+            logger.warning("没有找到 encoders_ 信息，请先fit")
+            return scaled_data
+
+        # 概率数组 argmax 得到类别索引，变成二维数组
+        label_indices = np.argmax(scaled_data, axis=-1)  # (batch, 5)
+
+        unknown_encoded = None
+        if hasattr(self, 'unknown_token_map_') and target_column in self.unknown_token_map_:
+            unknown_encoded = self.unknown_token_map_[target_column]
+
+        if unknown_encoded is not None:
+            unknown_mask = (label_indices == unknown_encoded)
+
+            # 临时替换unknown 为有效（避免编码器报错）
+            label_indices_clean = label_indices.copy()
+            label_indices_clean[unknown_mask] = 0
+        else:
+            label_indices_clean = label_indices
+
+        # 整体处理，再转回
+        flat_indices = label_indices_clean.flatten()
+        encoder = self.encoders_[target_column]
+
+        decoded = encoder.inverse_transfrom(flat_indices)
+        result = decoded.reshape(label_indices.shape)
+
+        if unknown_encoded is not None:
+            unknown_mask = (label_indices == unknown_encoded)
+            result = result.astype(object)  # 允许None
+            result[unknown_mask] = None
+
+        return result

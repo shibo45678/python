@@ -310,7 +310,7 @@ def TrainingMultiModel(model_name: str,
         callbacks=[
             # 早停：防止过拟合
             tf.keras.callbacks.EarlyStopping(monitor='val_loss',  # 整体验证损失
-                                             patience=10,  # 没有进步的训练轮数，在这之后训练停止
+                                             patience=5,  # 比学习率调度更耐心
                                              mode='min',  # 当监测指标停止减少时训练停止（维持最小值）
                                              min_delta=0.001,  # 设置最小改善阈值
                                              restore_best_weights=True),
@@ -322,7 +322,7 @@ def TrainingMultiModel(model_name: str,
             tf.keras.callbacks.ReduceLROnPlateau(
                 monitor='val_loss',  # 整体验证损失
                 factor=0.5,  # 学习率减半
-                patience=3,  # 2个epoch无改善就降低LR
+                patience=2,  # 2个epoch无改善就降低LR
                 min_lr=1e-7,  # 最小学习率
                 verbose=2,
                 mode='min'

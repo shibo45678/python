@@ -21,10 +21,11 @@ from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, D
                                    CategoricalMissingValueHandler,
                                    ColumnsTypeIdentify,
                                    ConvertCategoricalColumns,
-                                   ConvertNumericColumns, ProcessTimeseriesColumns, ProcessContinuous)
+                                   ConvertNumericColumns, ProcessTimeseriesColumns, ProcessContinuous,
+                                   StatisticsOutlierDetector)
 from data.data_preprocessing import SimpleTimeSampler
-from data.feature_engineering import (GenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
-                                      UnifiedFeatureScaler, CategoricalEncoding)
+from data.feature_engineering import (WeatherGenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
+                                      UnifiedFeatureScaler, CategoricalEncoding, OrdinalCategoricalEncoder)
 from data.exploration import VisualizationForNeural
 from deployment import DeploymentManager
 from predictor import TrainedModelPredictor
@@ -55,23 +56,20 @@ def main():
         'path': '~/Python/NeuralNetwork/temperature_forecasting/data/intermediate',
         'filename': 'outliers.csv'}
 
+    detector = StatisticsOutlierDetector(zscore_outlier_threshold=3.0, iqr_outlier_threshold=1.5)
     numeric_outliers_config = {'detect_and_handle_config': [
-        {'zscore': {'columns': ['T', 'Tpot', 'Tdew'], 'handle_method': ['clip', 'clip', 'clip'], 'threshold': 3}},
-        # 气温常接近正态分布，Z-score效果好
-        {'iqr': {'columns': ['p', 'VPmax', 'VPact', 'VPdef'], 'handle_method': ['clip', 'clip', 'clip', 'clip'],
-                 'threshold': 1.5, 'handle_function': partial(handle_)}},  # 气压有明确的物理范围，IQR对中等离群值敏感
-        {'robust':
-             {'columns': ['rh', 'sh', 'H2OC'], 'handle_method': ['clip', 'clip', 'clip'],
-              'quantile_range': (5, 95), }},
-        # 分位数检测对分布偏斜
-
-        {'isolationforest': {'columns': ['rho', 'wd'], 'handle_method': ['clip', 'clip'], 'contamination': 0.025,
-                             'random_state': 42}},
-        # 对复杂分布效果好
+        # {'iqr': {'columns': ['p', 'VPmax', 'VPact', 'VPdef', 'T', 'Tpot', 'Tdew', 'rh', 'sh', 'H2OC', 'rho', 'wd'],
+        #          'handle_method': ['clip', 'clip', 'clip', 'clip', 'clip', 'clip', 'clip', 'clip', 'clip', 'clip',
+        #                            'clip', 'clip'], 'threshold': 1.5}},
         {'custom': {'columns': ['wv', 'max. wv'], 'handle_method': ['custom', 'custom'],
                     'detect_function': partial(detect_, threshold=0),
-                    'handle_function': partial(handle_)}}],
-        'generate_outlier_indicator': ['T', 'rh']
+                    'handle_function': partial(handle_)}},
+        # {'isolationforest': {'columns': [], 'handle_method': [], 'contamination': 0.025,
+        #                      'random_state': 42}},
+        # {'zscore': {'columns': [], 'handle_method': [], 'threshold': 3}},
+        {'custom': {'columns': ['auto_handle_remain'], 'handle_method': ['clip'], 'skip_handle': [],
+                    'detect_function': partial(detector.recommend_detection_method)}}],
+        'generate_outlier_indicator': ['T', 'rh'],
     }
 
     categorical_outliers_config = {
@@ -94,20 +92,21 @@ def main():
     scaling_config = {
         'transformers': [
             {'standard': {
-                'columns': ['p', 'Tpot', 'Tdew', 'wv_x', 'wv_y', 'max. wv_x', 'max. wv_y', ]}},
-            {'minmax': {'columns': ['rh', 'VPmax', 'Vpact', 'VPdef', 'sh', 'H2OC', 'rho'], 'feature_range': (-1, 1)}},
+                'columns': ['T', 'p', 'Tpot', 'Tdew', 'wv_x', 'wv_y', 'max. wv_x', 'max. wv_y', ]}},
+            {'minmax': {'columns': ['rh', 'VPmax', 'Vpact', 'VPdef', 'sh', 'H2OC', 'rho',
+                                    'years_since_start'], 'feature_range': (0, 1)}},
             # 相同方法，相同其他参数配置，在columns列表填写
-            {'minmax': {'columns': ['timedelta'], 'feature_range': (0, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
+            {'minmax': {'columns': [], 'feature_range': (-1, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
             {'robust': {'columns': [], 'quantile_range': (10, 90)}}
         ],
-        'skip_scale': ['is_night', 'Day_sin', 'Day_cos', 'Year_sin', 'Year_cos', 'Month_sin', 'Month_cos', 'Season_sin',
-                       'Season_cos']
-        # 跳过二分类列(数值型）/ 异常值标记列自动skip
+        'skip_scale': ['is_night', 'hour_sin', 'hour_cos', 'day_of_year_cos', 'day_of_year_sin', 'Season_sin',
+                       'Season_cos']  # 跳过二分类列(数值型）/ 异常值标记列自动skip
+
     }
 
     # 先初始化 再延迟计算（lazy evaluation）
     preparation_configs = [
-        {'obj_list': [DescribeData(log_level="DEBUG"), DeleteUselessCols()], 'len_change': False},
+        {'obj_list': [DescribeData(), DeleteUselessCols()], 'len_change': False},
         {'obj_list': [RemoveDuplicates(download_config=download_duplicates_config)], 'len_change': True},
         {'obj_list': [ColumnsTypeIdentify(),
                       ProcessTimeseriesColumns(interactive=False),
@@ -126,11 +125,14 @@ def main():
         {'obj_list': [SimpleTimeSampler(time_column='Date Time', freq_hours=1, minute=0, second=0)],
          'len_change': True},
 
-        {'obj_list': [GenerationFromNumeric(dir_cols=['wd'], var_cols=['wv', 'max. wv'], plot=False),
+        {'obj_list': [WeatherGenerationFromNumeric(selected_columns=['wd', 'wv', 'max. wv', 'Tdew', 'T', 'rh'],
+                                                   create_statistical=True),
                       GenerationFromTimeseries(time_column='Date Time', plot=False),
                       BasedOnCorrSelector(pass_through=True),
                       UnifiedFeatureScaler(method_config=scaling_config, algorithm='lstm'),  # 自动根据数据分布及算法类型进行推荐标准化
-                      CategoricalEncoding(handle_unknown='ignore', unknown_token='__UNKNOWN__'),
+                      OrdinalCategoricalEncoder(encode_order_cols={
+                          'segments': ['极寒', '严寒', '寒冷', '冰点下', '低温', '凉', '舒适', '暖', '热']},
+                          handle_unknown='use_encoded_value', unknown_value=-1),
                       VisualizationForNeural(pass_through=False),
                       ], 'len_change': False},
     ]
@@ -140,7 +142,7 @@ def main():
     raw_data = loader.learn_process()
 
     # 2. 数据集分割
-    splitter = TimeSeriesSplitter(train_size=0.6, val_size=0.2, test_size=0.2, shuffle=False)
+    splitter = TimeSeriesSplitter(train_size=0.7, val_size=0.2, test_size=0.1, shuffle=False)
     df_train, df_val, df_test = splitter.learn_process(raw_data)
     logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
 
@@ -212,14 +214,14 @@ def main():
                                    'T': {'type': 'regression',  # 单变量回归
                                          'loss': 'mse',  # 主损失函数
                                          'metrics': ['mae'],  # 额外指标：平均绝对误差
-                                         'loss_weights': 0.95,
+                                         'loss_weights': 0.8,
                                          'units': 1,  # 每个时间步预测n个特征
                                          },
 
                                    'rh': {'type': 'regression',
                                           'loss': 'mse',
                                           'metrics': ['mae'],
-                                          'loss_weights': 0.22,
+                                          'loss_weights': 0.2,
                                           'units': 1,
                                           }
                                },
@@ -231,7 +233,7 @@ def main():
         'learning_rate': 0.00035,
         'units': [192],  # len控制lstm的层数
         'return_sequences': [False],
-        'epochs': 30,
+        'epochs': 50,
         'verbose': 2,
         # 'continue_from': '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm1_20260106_202506'# 指定目录
     }}

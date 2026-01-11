@@ -3,6 +3,7 @@ import os, cloudpickle, json, shutil
 from pathlib import Path
 import logging
 
+import pandas as pd
 from sklearn.utils.validation import check_is_fitted
 
 logger = logging.getLogger(__name__)
@@ -226,6 +227,8 @@ class DeploymentManager:
                         statistics[col].update({
                             'median':stats.median.tolist()
                         })
+            s = pd.DataFrame(statistics)
+            s.to_csv('/Users/shibo/Python/NeuralNetwork/temperature_forecasting/data/intermediate/scaler.csv')
 
         if trans_type == 'CategoricalEncoding':
             encoders = getattr(transformer,'encoders_')
@@ -237,6 +240,7 @@ class DeploymentManager:
                         'classes':encoder.classes_.tolist(),
                         'mapping': {cls:i for i ,cls in enumerate(encoder.classes_)}
                     }
+
 
         return statistics if statistics else None
 

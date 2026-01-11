@@ -18,20 +18,18 @@
       "wv_y",
       "max. wv_x",
       "max. wv_y",
+      "Tdew_diff",
       "is_night",
-      "timedelta",
-      "days_since_start",
-      "years_since_start",
-      "Day_sin",
-      "Day_cos",
-      "Year_sin",
-      "Year_cos",
-      "Month_sin",
-      "Month_cos",
+      "hour_sin",
+      "hour_cos",
+      "day_of_year_sin",
+      "day_of_year_cos",
       "Season_sin",
       "Season_cos"
     ],
-    "categorical_columns": [],
+    "categorical_columns": [
+      "segments"
+    ],
     "time_column": "Date Time",
     "input_width": 6,
     "output_width": 5,
@@ -43,7 +41,7 @@
         "metrics": [
           "mae"
         ],
-        "loss_weights": 0.95,
+        "loss_weights": 0.8,
         "units": 1
       },
       "rh": {
@@ -52,7 +50,7 @@
         "metrics": [
           "mae"
         ],
-        "loss_weights": 0.22,
+        "loss_weights": 0.2,
         "units": 1
       }
     },
@@ -65,7 +63,7 @@
     "return_sequences": [
       false
     ],
-    "epochs": 30,
+    "epochs": 50,
     "verbose": 2
   },
   "window_config": {
@@ -89,451 +87,21 @@
       "wv_y",
       "max. wv_x",
       "max. wv_y",
+      "Tdew_diff",
       "is_night",
-      "timedelta",
-      "days_since_start",
-      "years_since_start",
-      "Day_sin",
-      "Day_cos",
-      "Year_sin",
-      "Year_cos",
-      "Month_sin",
-      "Month_cos",
+      "hour_sin",
+      "hour_cos",
+      "day_of_year_sin",
+      "day_of_year_cos",
       "Season_sin",
       "Season_cos"
     ],
-    "categorical_columns": [],
-    "embedding_configs": {}
-  },
-  "preprocessor_info": {
-    "type": "CompletePreprocessor",
-    "serialization_method": "cloudpickle",
-    "file_path": "preprocessor.cpkl",
-    "processing_steps": {
-      "pipeline_0": {
-        "pipeline_type": "Pipeline",
-        "steps": [
-          {
-            "step_name": "engineer_0",
-            "transformer_type": "DescribeData",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_1",
-            "transformer_type": "DeleteUselessCols",
-            "is_fitted": null,
-            "statistices": null
-          }
-        ],
-        "is_fitted": null
-      },
-      "pipeline_2": {
-        "pipeline_type": "Pipeline",
-        "steps": [
-          {
-            "step_name": "engineer_0",
-            "transformer_type": "ColumnsTypeIdentify",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_1",
-            "transformer_type": "ProcessTimeseriesColumns",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_2",
-            "transformer_type": "ConvertCategoricalColumns",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_3",
-            "transformer_type": "ConvertNumericColumns",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_4",
-            "transformer_type": "ProblemColumnsFixed",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_5",
-            "transformer_type": "SpecialColumnsFixed",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_6",
-            "transformer_type": "CheckExtreFeatures",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_7",
-            "transformer_type": "NumericOutlierProcessor",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_8",
-            "transformer_type": "CategoricalOutlierProcessor",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_9",
-            "transformer_type": "NumericMissingValueHandler",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_10",
-            "transformer_type": "CategoricalMissingValueHandler",
-            "is_fitted": null,
-            "statistices": null
-          }
-        ],
-        "is_fitted": null
-      },
-      "pipeline_4": {
-        "pipeline_type": "Pipeline",
-        "steps": [
-          {
-            "step_name": "engineer_0",
-            "transformer_type": "GenerationFromNumeric",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_1",
-            "transformer_type": "GenerationFromTimeseries",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_2",
-            "transformer_type": "BasedOnCorrSelector",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_3",
-            "transformer_type": "UnifiedFeatureScaler",
-            "is_fitted": null,
-            "statistices": {
-              "p": {
-                "mean": [
-                  988.8187372992265
-                ],
-                "std": [
-                  8.052335677457675
-                ],
-                "var": [
-                  64.84010986245777
-                ]
-              },
-              "T": {
-                "mean": [
-                  8.992676264128496
-                ],
-                "std": [
-                  8.829997663312291
-                ],
-                "var": [
-                  77.96885873410051
-                ]
-              },
-              "Tpot": {
-                "mean": [
-                  283.0719145746579
-                ],
-                "std": [
-                  8.893331422714956
-                ],
-                "var": [
-                  79.09134379424921
-                ]
-              },
-              "Tdew": {
-                "mean": [
-                  4.490070910172516
-                ],
-                "std": [
-                  7.1579076128529975
-                ],
-                "var": [
-                  51.2356413941389
-                ]
-              },
-              "rh": {
-                "data_min": [
-                  43.96
-                ],
-                "data_max_": [
-                  97.2
-                ],
-                "data_range": [
-                  53.24
-                ]
-              },
-              "VPmax": {
-                "data_min": [
-                  0.97
-                ],
-                "data_max_": [
-                  32.585
-                ],
-                "data_range": [
-                  31.615000000000002
-                ]
-              },
-              "VPact": {
-                "mean": [
-                  9.32273254015467
-                ],
-                "std": [
-                  4.228632665639119
-                ],
-                "var": [
-                  17.881334220910205
-                ]
-              },
-              "VPdef": {
-                "data_min": [
-                  0.0
-                ],
-                "data_max_": [
-                  12.059999999999999
-                ],
-                "data_range": [
-                  12.059999999999999
-                ]
-              },
-              "sh": {
-                "data_min": [
-                  2.07
-                ],
-                "data_max_": [
-                  10.75
-                ],
-                "data_range": [
-                  8.68
-                ]
-              },
-              "H2OC": {
-                "data_min": [
-                  3.32
-                ],
-                "data_max_": [
-                  17.17
-                ],
-                "data_range": [
-                  13.850000000000001
-                ]
-              },
-              "rho": {
-                "data_min": [
-                  1134.3
-                ],
-                "data_max_": [
-                  1319.71
-                ],
-                "data_range": [
-                  185.41000000000008
-                ]
-              },
-              "wv_x": {
-                "mean": [
-                  -0.5706674347309535
-                ],
-                "std": [
-                  1.9999092018122835
-                ],
-                "var": [
-                  3.9996368154934445
-                ]
-              },
-              "wv_y": {
-                "mean": [
-                  -0.40363728049246594
-                ],
-                "std": [
-                  1.5659140362065482
-                ],
-                "var": [
-                  2.452086768788683
-                ]
-              },
-              "max. wv_x": {
-                "mean": [
-                  -0.9258994731168761
-                ],
-                "std": [
-                  3.103942138552772
-                ],
-                "var": [
-                  9.634456799483555
-                ]
-              },
-              "max. wv_y": {
-                "mean": [
-                  -0.7289991776114823
-                ],
-                "std": [
-                  2.628006582556204
-                ],
-                "var": [
-                  6.906418597958738
-                ]
-              },
-              "timedelta": {
-                "data_min": [
-                  0.0
-                ],
-                "data_max_": [
-                  7200.0
-                ],
-                "data_range": [
-                  7200.0
-                ]
-              },
-              "days_since_start": {
-                "mean": [
-                  875.0595359904819
-                ],
-                "std": [
-                  505.49767828283694
-                ],
-                "var": [
-                  255527.9027493385
-                ]
-              },
-              "years_since_start": {
-                "mean": [
-                  2.3957824393989924
-                ],
-                "std": [
-                  1.3839772163801147
-                ],
-                "var": [
-                  1.915392935459251
-                ]
-              }
-            }
-          },
-          {
-            "step_name": "engineer_4",
-            "transformer_type": "CategoricalEncoding",
-            "is_fitted": null,
-            "statistices": null
-          },
-          {
-            "step_name": "engineer_5",
-            "transformer_type": "VisualizationForNeural",
-            "is_fitted": null,
-            "statistices": null
-          }
-        ],
-        "is_fitted": null
-      },
-      "cleaner_1": {
-        "cleaner_type": "dict",
-        "steps": [
-          {
-            "step_name": "step_0"
-          },
-          {
-            "step_name": "is_processed_"
-          }
-        ],
-        "is_processed": true
-      },
-      "cleaner_3": {
-        "cleaner_type": "dict",
-        "steps": [
-          {
-            "step_name": "step_0"
-          },
-          {
-            "step_name": "is_processed_"
-          }
-        ],
-        "is_processed": true
-      }
-    },
-    "feature_info": {
-      "num_cols_input": [
-        "p",
-        "T",
-        "Tpot",
-        "Tdew",
-        "rh",
-        "VPmax",
-        "VPact",
-        "VPdef",
-        "sh",
-        "H2OC",
-        "rho",
-        "is_outlier_T",
-        "is_outlier_rh",
-        "wv_x",
-        "wv_y",
-        "max. wv_x",
-        "max. wv_y",
-        "is_night",
-        "timedelta",
-        "days_since_start",
-        "years_since_start",
-        "Day_sin",
-        "Day_cos",
-        "Year_sin",
-        "Year_cos",
-        "Month_sin",
-        "Month_cos",
-        "Season_sin",
-        "Season_cos"
-      ],
-      "cat_cols_input": [],
-      "num_cols_inverse": [
-        "p",
-        "T",
-        "Tpot",
-        "Tdew",
-        "rh",
-        "VPmax",
-        "VPact",
-        "VPdef",
-        "sh",
-        "H2OC",
-        "rho",
-        "wv_x",
-        "wv_y",
-        "max. wv_x",
-        "max. wv_y",
-        "timedelta",
-        "days_since_start",
-        "years_since_start",
-        "Day_sin",
-        "Day_cos",
-        "Year_sin",
-        "Year_cos",
-        "Month_sin",
-        "Month_cos",
-        "Season_sin",
-        "Season_cos"
-      ],
-      "time_col": "Date Time"
-    }
-  },
-  "deployment_info": {
-    "created_at": "2026-01-07T16:45:13.397088",
-    "version": "1.0",
-    "framework": "tensorflow",
-    "requires_preprocessing": true
-  }
-}
+    "categorical_columns": [
+      "segments"
+    ],
+    "embedding_configs": {
+      "segments": {
+        "input_dim": 10,
+        "name": "embedding_segments",
+        "output_dim": 3,
+        "embeddings_regularizer": 
