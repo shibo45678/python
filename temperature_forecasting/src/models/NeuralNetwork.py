@@ -530,7 +530,7 @@ class TimeSeriesPostProcessor:
         logger.debug(f"step_names: {step_names}")
 
         if step_names is None:
-            step_names = ['engineer_3', 'engineer_4']
+            step_names = ['engineer_4', 'engineer_5']
 
         result = prediction
 
@@ -538,7 +538,7 @@ class TimeSeriesPostProcessor:
             transformer = self._temp_preprocessor.pipelines_[pipeline_name].named_steps[step_name]
 
             # 逆标准化
-            if step_name == 'engineer_3':
+            if step_name == 'engineer_4':
                 valid_col = transformer.with_no_outlier_columns_
 
                 # 普通数值列（非二分类列：特征/标记）
@@ -556,7 +556,7 @@ class TimeSeriesPostProcessor:
                     logger.debug(f"目标列{target_column}不需要数值列的逆标准化转换或者二分阈值管理")
 
             # 逆编码
-            elif step_name == 'engineer_4':
+            elif step_name == 'engineer_5':
                 valid_col = transformer.categorical_columns_
 
                 # 多分类 概率数组: (batch, timesteps, num_classes)
@@ -571,7 +571,7 @@ class TimeSeriesPostProcessor:
                                       step_names=None, target_column=None, task_type: str = None) -> np.ndarray:
 
         if step_names is None:
-            step_names = ['engineer_3', 'engineer_4']
+            step_names = ['engineer_4', 'engineer_5']
 
         result = prediction
 
@@ -584,7 +584,7 @@ class TimeSeriesPostProcessor:
                     transformer = pickle.loads(state_info['pickled'])
 
                     if hasattr(transformer, 'custom_inverse_transform'):
-                        if step_name == 'engineer_3':
+                        if step_name == 'engineer_4':
                             valid_col = transformer.with_no_outlier_columns_
                             if target_column is not None and task_type == 'regression' and target_column in valid_col:
                                 result = transformer.custom_inverse_transform(scaled_data=result,

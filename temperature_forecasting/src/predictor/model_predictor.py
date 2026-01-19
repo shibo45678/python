@@ -23,9 +23,9 @@ class TrainedModelPredictor:
     def load(self):
         """加载所有组件 使用 TensorFlow SavedModel"""
         # 1. 加载配置
-        config_path = os.path.join(self.deployment_path, 'deployment_config.json')
-        with open(config_path, 'r') as f:
-            self.config = json.load(f)
+        config_path = os.path.join(self.deployment_path, 'deployment_config.cpkl')
+        with open(config_path, 'rb') as f:
+            self.config = cloudpickle.load(f)
 
         # 2. 加载 预处理器
         preprocessor_path = os.path.join(self.deployment_path, 'preprocessor.cpkl')
@@ -84,7 +84,7 @@ class TrainedModelPredictor:
             break
 
         print(f"提取的 numeric_input 形状: {numeric_input.shape}")
-        raw_outputs = self.serving_fn(numeric_input=numeric_input)
+        raw_outputs = self.serving_fn(numeric_input=numeric_input,categorical_segments_input=categorical_input)
 
         return self._process_multi_output(raw_outputs)
 

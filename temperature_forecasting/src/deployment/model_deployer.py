@@ -85,9 +85,9 @@ class DeploymentManager:
                 }
         }
 
-        config_path = os.path.join(deployment_path, 'deployment_config.json')
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+        config_path = os.path.join(deployment_path, 'deployment_config.cpkl')
+        with open(config_path,'wb') as f:
+            cloudpickle.dump(config, f)
 
         # 5.保存窗口生成器
         if hasattr(self,'window_generator') and self.window_generator is not None:
@@ -161,10 +161,10 @@ class DeploymentManager:
         time_col = self.model_config.get('time_column')
 
         if hasattr(self.preprocessor, 'get_specific_attribute'):
-            num_cols_input = self.preprocessor.get_specific_attribute(4, 'engineer_3',
+            num_cols_input = self.preprocessor.get_specific_attribute(4, 'engineer_4',
                                                                       'numeric_columns_')  # 取第5个class的第4步的属性
-            num_cols_inverse = self.preprocessor.get_specific_attribute(4, 'engineer_3', 'with_no_outlier_columns_')
-            cat_cols_input = self.preprocessor.get_specific_attribute(4, 'engineer_4', 'categorical_columns_')
+            num_cols_inverse = self.preprocessor.get_specific_attribute(4, 'engineer_4', 'with_no_outlier_columns_')
+            cat_cols_input = self.preprocessor.get_specific_attribute(4, 'engineer_5', 'categorical_columns_')
 
             columns = {
                 'num_cols_input': num_cols_input,

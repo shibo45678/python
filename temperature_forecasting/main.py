@@ -25,7 +25,8 @@ from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, D
                                    StatisticsOutlierDetector)
 from data.data_preprocessing import SimpleTimeSampler
 from data.feature_engineering import (WeatherGenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
-                                      UnifiedFeatureScaler, CategoricalEncoding, OrdinalCategoricalEncoder)
+                                      UnifiedFeatureScaler, CategoricalEncoding, OrdinalCategoricalEncoder,
+                                      CustomPowerTransformer,CustomQuantileTransformer)
 from data.exploration import VisualizationForNeural
 from deployment import DeploymentManager
 from predictor import TrainedModelPredictor
@@ -67,8 +68,9 @@ def main():
         # {'isolationforest': {'columns': [], 'handle_method': [], 'contamination': 0.025,
         #                      'random_state': 42}},
         # {'zscore': {'columns': [], 'handle_method': [], 'threshold': 3}},
-        {'custom': {'columns': ['auto_handle_remain'], 'handle_method': ['clip'], 'skip_handle': [],
-                    'detect_function': partial(detector.recommend_detection_method)}}],
+        # {'custom': {'columns': ['auto_handle_remain'], 'handle_method': ['clip'], 'skip_handle': [],
+        #             'detect_function': partial(detector.recommend_detection_method)}}
+    ],
         'generate_outlier_indicator': ['T', 'rh'],
     }
 
@@ -91,13 +93,11 @@ def main():
     # 新特征生成后
     scaling_config = {
         'transformers': [
-            {'standard': {
-                'columns': ['T', 'p', 'Tpot', 'Tdew', 'wv_x', 'wv_y', 'max. wv_x', 'max. wv_y', ]}},
-            {'minmax': {'columns': ['rh', 'VPmax', 'Vpact', 'VPdef', 'sh', 'H2OC', 'rho',
-                                    'years_since_start'], 'feature_range': (0, 1)}},
+            {'standard': {'columns': []}},# 'p', , 'Tpot', 'Tdew', 'rh', 'VPmax', 'VPact', 'VPdef', 'sh', 'H2OC', 'rho', 'wv', 'max. wv', 'wd'
+            {'minmax': {'columns': ['rh'], 'feature_range': (0, 1)}}, # rh有界变量（0～100），MinMax 天然匹配
             # 相同方法，相同其他参数配置，在columns列表填写
             {'minmax': {'columns': [], 'feature_range': (-1, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
-            {'robust': {'columns': [], 'quantile_range': (10, 90)}}
+            {'robust': {'columns': ['T','wv_y','max. wv_x','max. wv_y'], 'quantile_range': (25, 75)}}
         ],
         'skip_scale': ['is_night', 'hour_sin', 'hour_cos', 'day_of_year_cos', 'day_of_year_sin', 'Season_sin',
                        'Season_cos']  # 跳过二分类列(数值型）/ 异常值标记列自动skip
@@ -129,6 +129,9 @@ def main():
                                                    create_statistical=True),
                       GenerationFromTimeseries(time_column='Date Time', plot=False),
                       BasedOnCorrSelector(pass_through=True),
+
+                      # CustomPowerTransformer(method='yeo-johnson', standardize=False,pass_through=False),
+                      CustomQuantileTransformer(output_distribution='normal', n_quantiles=1000, random_state=42, pass_through=False),
                       UnifiedFeatureScaler(method_config=scaling_config, algorithm='lstm'),  # 自动根据数据分布及算法类型进行推荐标准化
                       OrdinalCategoricalEncoder(encode_order_cols={
                           'segments': ['极寒', '严寒', '寒冷', '冰点下', '低温', '凉', '舒适', '暖', '热']},
@@ -174,8 +177,8 @@ def main():
     features_temp_val, _ = preprocessor.transform_predict(features=df_val, labels=None)
     features_temp_test, _ = preprocessor.transform_predict(features=df_test_adjust, labels=None)
 
-    num_cols = preprocessor.get_specific_attribute(4, 'engineer_3', 'numeric_columns_')  # 取第5个class的第4步的属性
-    cat_cols = preprocessor.get_specific_attribute(4, 'engineer_4', 'categorical_columns_')
+    num_cols = preprocessor.get_specific_attribute(4, 'engineer_4', 'numeric_columns_')  # 取第5个class的第4步的属性
+    cat_cols = preprocessor.get_specific_attribute(4, 'engineer_5', 'categorical_columns_')
     time_col = preprocessor.get_specific_attribute(2, 'engineer_1', 'valid_time_column_')
 
     # 4. 并行模型训练、评估
@@ -301,7 +304,7 @@ def main():
                 task_config=config.get('output_config'),
                 output_width=config.get('output_width'),
                 pipeline_name='pipeline_4',
-                step_names=['engineer_3', 'engineer_4'])
+                step_names=['engineer_4', 'engineer_5'])
 
             # 6. 添加时间戳
             final_pred_results, predictions_dict = postprocessor.add_timestamps(
