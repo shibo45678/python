@@ -163,7 +163,7 @@ class DeploymentManager:
         if hasattr(self.preprocessor, 'get_specific_attribute'):
             num_cols_input = self.preprocessor.get_specific_attribute(4, 'engineer_4',
                                                                       'numeric_columns_')  # 取第5个class的第4步的属性
-            num_cols_inverse = self.preprocessor.get_specific_attribute(4, 'engineer_4', 'with_no_outlier_columns_')
+            num_cols_inverse = self.preprocessor.get_specific_attribute(4, 'engineer_4', 'without_outlier_missing_columns_')
             cat_cols_input = self.preprocessor.get_specific_attribute(4, 'engineer_5', 'categorical_columns_')
 
             columns = {

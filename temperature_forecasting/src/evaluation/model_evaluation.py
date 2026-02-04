@@ -90,7 +90,7 @@ class ModelEvaluation:
             else:  # binary_classification + 多分类
                 data_metric = data_metrics.get(f'{task_name}_accuracy', 0)
                 metric_name = 'accuracy'
-            logger.debug(f"{task_name} - {dataset_type}-{metric_name}: {data_metric:.4f}")
+            logger.debug(f"{task_name} - 整体{dataset_type}-{metric_name}: {data_metric:.4f}")
 
             # 存储任务指标
             task_metrics[task_name] = {
@@ -110,7 +110,7 @@ class ModelEvaluation:
         inputs, true_labels = next(iter(dataset))  # (tuple ,dict)
         predictions = model.predict(inputs, verbose=0)  # dict
 
-        logger.debug(f"=== {self.model_name} - {dataset_type} 详细分析 ===")
+        logger.debug(f"=== {self.model_name} - {dataset_type} 详细分析（单批） ===")
         task_results = {}
 
         # 多输出模型：predictions是dict
@@ -170,7 +170,6 @@ class ModelEvaluation:
         logger.debug(f"MSE: {mse:.4f}")
         logger.debug(f"RMSE: {rmse:.4f}")
 
-        # 预测值统计
         # 使用 TensorFlow 函数获取最小最大值
         pred_min = tf.reduce_min(predictions).numpy()
         pred_max = tf.reduce_max(predictions).numpy()

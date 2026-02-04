@@ -82,5 +82,5 @@ debug/
 *.hdf5
 *.model
 *.pth
-
-deployment_package/postprocessor.cpkl
+deployment_package/*.cpkl
+deployment_package/*.pkl

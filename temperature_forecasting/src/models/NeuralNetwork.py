@@ -473,7 +473,8 @@ class TimeSeriesPostProcessor:
            **kwargs: 其他参数
 
         Returns:
-           逆转换后的结果
+           逆转换后的结果 _
+           再判断是否有果power transformer
         """
         if not isinstance(raw_predictions, dict):
             raise TypeError(f"期望字典格式，但得到: {type(raw_predictions)}")
@@ -509,37 +510,42 @@ class TimeSeriesPostProcessor:
 
             if not use_saved and hasattr(self, '_temp_preprocessor'):
                 task_result = self._inverse_transform_live(prediction=task_pred, target_column=task_name,
-                                                           task_type=task_type,
-                                                           **kwargs)
+                                                           task_type=task_type, **kwargs)
             else:
-                task_result = self._inverse_transform_from_saved(prediction=task_pred,
-                                                                 target_column=task_name, task_type=task_type, **kwargs)
+                task_result = self._inverse_transform_from_saved(prediction=task_pred, target_column=task_name,
+                                                                 task_type=task_type, **kwargs)
 
             logger.debug(f"[INFO] 任务{task_name}逆转换后: {task_result.shape}")
             processed_tasks[task_name] = task_result
 
         return processed_tasks
 
+
+
+
     def _inverse_transform_live(self, prediction: np.ndarray, pipeline_name='pipeline_4',
-                                step_names=None, target_column: str = None, task_type: str = None) -> np.ndarray:
+                                scale_step_names=None, target_column: str = None, task_type: str = None,transform_step_name=None) -> np.ndarray:
 
         logger.debug(f"[DEBUG] _inverse_transform_live 开始")
         logger.debug(f"target_column: {target_column}")
         logger.debug(f"task_pred: {prediction.shape}")
         logger.debug(f"pipeline_name: {pipeline_name}")
-        logger.debug(f"step_names: {step_names}")
+        logger.debug(f"scale_step_names: {scale_step_names}")
 
-        if step_names is None:
-            step_names = ['engineer_4', 'engineer_5']
+        if scale_step_names is None:
+            scale_step_names = ['engineer_4', 'engineer_5']
+
+        if transform_step_name is None:
+            transform_step_name = 'engineer_3'
 
         result = prediction
 
-        for step_name in step_names:
+        for step_name in scale_step_names:
             transformer = self._temp_preprocessor.pipelines_[pipeline_name].named_steps[step_name]
 
             # 逆标准化
             if step_name == 'engineer_4':
-                valid_col = transformer.with_no_outlier_columns_
+                valid_col = transformer.without_outlier_missing_columns_
 
                 # 普通数值列（非二分类列：特征/标记）
                 if target_column is not None and task_type == 'regression' and target_column in valid_col:  # 只有数值列才进行标准化
@@ -550,7 +556,6 @@ class TimeSeriesPostProcessor:
                 elif target_column is not None and task_type == 'binary_classification' and target_column not in valid_col:
                     threshold = 0.5
                     result = (result > threshold).astype(int)
-                    # result = pd.DataFrame(result, columns=[f'pred_{target_column}_{j}' for j in range(result.shape[1])])
 
                 else:
                     logger.debug(f"目标列{target_column}不需要数值列的逆标准化转换或者二分阈值管理")
@@ -565,17 +570,37 @@ class TimeSeriesPostProcessor:
                 else:
                     logger.debug(f"目标列{target_column}不需要分类列的逆编码转换")
 
+        """标准化/编码后，再进行其他逆转换"""
+        other_transformer = self._temp_preprocessor.pipelines_[pipeline_name].named_steps[transform_step_name]
+
+        if target_column is not None:
+            if target_column in other_transformer.valid_asinh_columns_:
+                result = other_transformer.custom_inverse_transform(transformed_data=result,target_column=target_column,transform_type = 'asinh')
+
+            # PowerTransformer 逆转换单列时需要模拟原始列数，但只填充目标列。
+            elif target_column in other_transformer.valid_power_columns_: # batch, output_width
+                result = other_transformer.custom_inverse_transform(transformed_data=result,target_column=target_column,transform_type = 'power')
+
+            else:
+                logger.debug(f"目标列{target_column}不需要powertransform/asinh等逆转换")
+
+        else:
+            logger.debug(f"目标列{target_column}为空")
+
         return result
 
     def _inverse_transform_from_saved(self, prediction: np.ndarray, pipeline_name='pipeline_4',
-                                      step_names=None, target_column=None, task_type: str = None) -> np.ndarray:
+                                      scale_step_names=None, target_column=None, task_type: str = None,transform_step_name=None) -> np.ndarray:
 
-        if step_names is None:
-            step_names = ['engineer_4', 'engineer_5']
+        if scale_step_names is None:
+            scale_step_names = ['engineer_4', 'engineer_5']
+
+        if transform_step_name is None:
+            transform_step_name = ['engineer_3']
 
         result = prediction
 
-        for step_name in step_names:
+        for step_name in scale_step_names:
             if pipeline_name in self.serialized_states and step_name in self.serialized_states[pipeline_name]:
                 state_info = self.serialized_states[pipeline_name][step_name]
 
@@ -585,7 +610,7 @@ class TimeSeriesPostProcessor:
 
                     if hasattr(transformer, 'custom_inverse_transform'):
                         if step_name == 'engineer_4':
-                            valid_col = transformer.with_no_outlier_columns_
+                            valid_col = transformer.without_outlier_missing_columns_
                             if target_column is not None and task_type == 'regression' and target_column in valid_col:
                                 result = transformer.custom_inverse_transform(scaled_data=result,
                                                                               target_column=target_column)
@@ -605,6 +630,25 @@ class TimeSeriesPostProcessor:
                                 logger.debug(f"目标列{target_column}不需要分类列的逆编码转换")
                 else:
                     logger.debug(f"pickled失败需要手动")
+
+        """标准化/编码后，再进行其他逆转换"""
+        other_transformer = self._temp_preprocessor.pipelines_[pipeline_name].named_steps[transform_step_name]
+
+        if target_column is not None:
+            if target_column in other_transformer.valid_asinh_columns_:
+                result = other_transformer.custom_inverse_transform(transformed_data=result,
+                                                                    target_column=target_column, transform_type='asinh')
+
+            # PowerTransformer 逆转换单列时需要模拟原始列数，但只填充目标列。
+            elif target_column in other_transformer.valid_power_columns_:  # batch, output_width
+                result = other_transformer.custom_inverse_transform(transformed_data=result,
+                                                                    target_column=target_column, transform_type='power')
+
+            else:
+                logger.debug(f"目标列{target_column}不需要powertransform/asinh等逆转换")
+
+        else:
+            logger.debug(f"目标列{target_column}为空")
 
         logger.debug(f"[DEBUG] _inverse_transform_saved 结束，返回类型: {type(result)}")
         return result

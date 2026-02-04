@@ -1,7 +1,9 @@
 import matplotlib
+
 matplotlib.use('TkAgg')  # 或 'Qt5Agg', 'MacOSX'（Mac）
 
 import matplotlib.pyplot as plt
+
 # 创建并编译一个模型
 # original_model = tf.keras.Sequential([
 #     tf.keras.layers.Dense(10, input_shape=(5,)),
@@ -39,29 +41,6 @@ import matplotlib.pyplot as plt
 # # 验证 metrics 配置
 # print(f"\n模型metrics列表: {loaded_model.metrics}")
 
-def get_deployment_model(self):
-    """获取部署用的SavedModel路径"""
-
-    if not hasattr(self, 'best_checkpoint'):
-        raise ValueError('未找到最佳模型检查点')
-
-    savedmodel_dir = os.path.join(self.best_checkpoint, 'saved_model')
-
-    if not os.path.exists(savedmodel_dir):
-        raise FileNotFoundError(
-            f"找不到SavedModel目录: {savedmodel_dir}\n"
-            "请在训练回调中确保同时保存了SavedModel格式"
-        )
-
-    # 验证SavedModel格式
-    if not os.path.exists(os.path.join(savedmodel_dir, 'saved_model.pb')):
-        raise ValueError(f"不是有效的SavedModel格式: {savedmodel_dir}")
-
-    print(f"✅ 部署模型位置: {savedmodel_dir}")
-    return savedmodel_dir
-
-
-#
 # def deploy_with_tensorflow_serving(self):
 #     """生成TensorFlow Serving部署命令"""
 #
@@ -210,7 +189,6 @@ def get_deployment_model(self):
 #
 #     logger.debug(f"模型已从 {save_path} 加载")
 #     return estimator
-
 
 
 #     # 2. 保存预处理流水线
@@ -975,6 +953,7 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 from scipy import stats
+
 matplotlib.set_loglevel('warning')
 plt.rcParams['font.sans-serif'] = ['PingFang SC', 'Arial Unicode MS']
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
@@ -1282,7 +1261,6 @@ import numpy as np
 from scipy.stats import t
 import matplotlib.pyplot as plt
 
-
 # def calculate_variance_decomposition(df=3, threshold=2):
 #     """计算t分布方差在中心和尾部的贡献"""
 #     # 创建足够密集的采样点
@@ -1423,28 +1401,28 @@ import matplotlib.pyplot as plt
 # print("但逆变换后的值是基于训练数据分布的，会'回忆'起10000的存在")
 # print("导致逆变换后的值可能被错误地拉伸")
 #
-import numpy as np
-from sklearn.preprocessing import QuantileTransformer
+# import numpy as np
+# from sklearn.preprocessing import QuantileTransformer
+#
+# # 数据1：有异常值
+# data1 = np.array([10, 20, 30, 40, 10000])  # 有极端值10000
+#
+# # 数据2：无异常值
+# data2 = np.array([10, 20, 30, 40, 50])     # 无极端值
 
-# 数据1：有异常值
-data1 = np.array([10, 20, 30, 40, 10000])  # 有极端值10000
-
-# 数据2：无异常值
-data2 = np.array([10, 20, 30, 40, 50])     # 无极端值
-
-# 创建并拟合两个不同的QuantileTransformer
-qt1 = QuantileTransformer(output_distribution='uniform', random_state=42)
-qt2 = QuantileTransformer(output_distribution='uniform', random_state=42)
-
-# 分别拟合
-qt1.fit(data1.reshape(-1, 1))
-qt2.fit(data2.reshape(-1, 1))
-
-# 查看训练后的分位数映射
-print("qt1的5个分位数（0.0, 0.25, 0.5, 0.75, 1.0）对应的原始值:")
-print(qt1.quantiles_[:, 0])
-print("\nqt2的5个分位数（0.0, 0.25, 0.5, 0.75, 1.0）对应的原始值:")
-print(qt2.quantiles_[:, 0])
+# # 创建并拟合两个不同的QuantileTransformer
+# qt1 = QuantileTransformer(output_distribution='uniform', random_state=42)
+# qt2 = QuantileTransformer(output_distribution='uniform', random_state=42)
+#
+# # 分别拟合
+# qt1.fit(data1.reshape(-1, 1))
+# qt2.fit(data2.reshape(-1, 1))
+#
+# # 查看训练后的分位数映射
+# print("qt1的5个分位数（0.0, 0.25, 0.5, 0.75, 1.0）对应的原始值:")
+# print(qt1.quantiles_[:, 0])
+# print("\nqt2的5个分位数（0.0, 0.25, 0.5, 0.75, 1.0）对应的原始值:")
+# print(qt2.quantiles_[:, 0])
 #
 # # 关键理解：每个分位点对应的原始值是不同的！
 # print("\n关键差异：")
@@ -1498,3 +1476,250 @@ print(qt2.quantiles_[:, 0])
 # transformed2 = qt_income.transform(new_income2.reshape(-1, 1)).flatten()
 # inverse2 = qt_income.inverse_transform(transformed2.reshape(-1, 1)).flatten()
 # print("逆变换2：", inverse2) # [100. 200. 300. 400. 500. 500. 500. 500. 500. 500.]
+
+
+# 假设有以下特征分类
+# boundary_features = ['rh']  # 边界堆积特征
+# skewed_features = ['T', 'pressure']  # 偏态特征
+# other_features = ['wind_speed', 'cloud_cover']  # 其他特征
+#
+# # 构建每个特征的管道
+# boundary_pipe = Pipeline([
+#     ('quantile', QuantileTransformer(output_distribution='normal', random_state=42))
+# ])
+# # 注意：这里没有标准化，因为QuantileTransformer已经输出正态分布
+#
+# skewed_pipe = Pipeline([
+#     ('power', PowerTransformer(standardize=False)),
+#     ('scaler', RobustScaler())
+# ])
+#
+# other_pipe = Pipeline([
+#     ('scaler', RobustScaler())
+# ])
+
+# # 组合成ColumnTransformer
+# preprocessor = ColumnTransformer([
+#     ('boundary', boundary_pipe, boundary_features),
+#     ('skewed', skewed_pipe, skewed_features),
+#     ('other', other_pipe, other_features)
+# ])
+#
+# # 在训练数据上拟合
+# preprocessor.fit(X_train)
+#
+# # 变换训练数据
+# X_train_transformed = preprocessor.transform(X_train)
+#
+# # 变换新数据（预测时）
+# X_new_transformed = preprocessor.transform(X_new)
+
+#
+#
+# import numpy as np
+# from sklearn.base import BaseEstimator, TransformerMixin
+# from sklearn.preprocessing import FunctionTransformer
+#
+# # 最简单的方式：使用FunctionTransformer
+# asinh_transformer = FunctionTransformer(func=np.arcsinh, inverse_func=np.sinh)
+#
+# # 使用示例
+# wv_x = np.array([0, 0.1, 0.3, -0.2, 5.0, -8.0, 0.001, 20.0, -15.0])
+# wv_x_transformed = asinh_transformer.fit_transform(wv_x.reshape(-1, 1)).flatten()
+#
+# print("原始数据:")
+# print(wv_x)
+# print("\nasinh变换后:")
+# print(wv_x_transformed)
+# print("\n关键观察:")
+# print(f"0 -> {np.arcsinh(0):.6f}")
+# print(f"0.1 -> {np.arcsinh(0.1):.6f}")
+# print(f"5.0 -> {np.arcsinh(5.0):.6f}")
+# print(f"20.0 -> {np.arcsinh(20.0):.6f}")
+# print(f"-0.2 -> {np.arcsinh(-0.2):.6f}")
+# print(f"-8.0 -> {np.arcsinh(-8.0):.6f}")
+#
+#
+# class AsinhTransformer(BaseEstimator, TransformerMixin):
+#     """自定义的反双曲正弦变换器"""
+#
+#     def __init__(self, scale_factor=1.0):
+#         """
+#         参数:
+#         scale_factor: 缩放因子，可以调整变换的敏感性
+#         asinh(x/scale_factor)会先缩放数据
+#         """
+#         self.scale_factor = scale_factor
+#
+#     def fit(self, X, y=None):
+#         # asinh变换无状态，直接返回self
+#         return self
+#
+#     def transform(self, X):
+#         X = X.copy()
+#         return np.arcsinh(X / self.scale_factor)
+#
+#     def inverse_transform(self, X):
+#         return np.sinh(X) * self.scale_factor
+#
+#     def set_params(self, **params):
+#         for key, value in params.items():
+#             setattr(self, key, value)
+#         return self
+#
+#
+# # 使用示例
+# transformer = AsinhTransformer(scale_factor=1.0)
+#
+# # 模拟风速分量数据
+# np.random.seed(42)
+# # 生成大量接近0的小值和少量大值
+# small_winds = np.random.uniform(-1, 1, 950)  # 95%小风
+# strong_winds = np.random.uniform(-20, 20, 50)  # 5%大风
+# wv_x_sample = np.concatenate([small_winds, strong_winds])
+# np.random.shuffle(wv_x_sample)
+#
+# print("数据统计:")
+# print(f"样本数: {len(wv_x_sample)}")
+# print(f"均值: {wv_x_sample.mean():.4f}")
+# print(f"标准差: {wv_x_sample.std():.4f}")
+# print(f"最小值: {wv_x_sample.min():.4f}")
+# print(f"最大值: {wv_x_sample.max():.4f}")
+# print(f"|值|<0.5的比例: {np.mean(np.abs(wv_x_sample) < 0.5):.2%}")
+# print(f"|值|<1.0的比例: {np.mean(np.abs(wv_x_sample) < 1.0):.2%}")
+#
+# # 应用变换
+# wv_x_transformed = transformer.transform(wv_x_sample)
+#
+# print("\nasinh变换后统计:")
+# print(f"均值: {wv_x_transformed.mean():.4f}")
+# print(f"标准差: {wv_x_transformed.std():.4f}")
+# print(f"最小值: {wv_x_transformed.min():.4f}")
+# print(f"最大值: {wv_x_transformed.max():.4f}")
+#
+# # 对比关键值的变化
+# test_values = np.array([0, 0.1, 0.5, 1.0, 5.0, 10.0, -0.1, -0.5, -1.0, -5.0, -10.0])
+# print("\n关键值变换对比:")
+# print("原始值 -> asinh变换值")
+# for val in test_values:
+#     print(f"{val:6.1f} -> {np.arcsinh(val):8.4f}")
+#
+# arr_3d = np.zeros((2, 3, 4))
+# """
+# [[[0. 0. 0. 0.]
+#   [0. 0. 0. 0.]
+#   [0. 0. 0. 0.]]
+#
+#  [[0. 0. 0. 0.]
+#   [0. 0. 0. 0.]
+#   [0. 0. 0. 0.]]]
+# """
+# print(arr_3d)
+# slice_2d = np.array([[1, 2, 3, 4],
+#                      [5, 6, 7, 8],
+#                      [9, 10, 11, 12]])
+# arr_3d[:, :, :] = slice_2d[np.newaxis, :, :]
+# # arr_3d[...] = slice_2d
+# arr_3d[:, :, :] =slice_2d
+# print('\n',arr_3d)
+
+
+# print(np.broadcast_shapes((2,3,4), (3,4)))
+#
+# res[:, col_index] = data_2d.flatten()
+# res[:, :] = data_2d.flatten()
+import numpy as np
+
+#
+# # 示例验证
+# res = np.zeros((3, 4))  # 形状 (3, 4)
+# data = np.arange(3)     # 形状 (3,)
+#
+# res[:, :] = data  # 错误 ❌(3,) 补1到二维应该是 (1, 3)，而不是 (3, 1)
+# # (3,)，values.它本身 没有明确的行或列方，两数组维度不一样的时候，numPy 会在较小的数组 前面补1，使其维度对齐
+# # 当是（1，3）的时候，与（3，4）对不齐 报错
+# res[:,:] = data[:, np.newaxis] # 正确 补齐成(3,1)
+# res[:,:] = data[:, None] # 正确 补齐成(3,1)
+# print(res)
+# """
+# 输出：
+# [[0. 0. 0. 0.]
+#  [1. 1. 1. 1.]
+#  [2. 2. 2. 2.]]
+# """
+# arr = np.zeros((3,4))
+# arr[:,0] = [1,2,3] # 正确 (直接赋值，不需要广播)
+# arr[:,0] = np.array([[1,2,3]]) # (1，3) 正确
+# arr[:,0] = np.array([[1],[2],[3]]) # (3,1) ❌
+# print(arr) # 应用PowerTransformer多列转换
+"""
+[[1. 0. 0. 0.]
+ [2. 0. 0. 0.]
+ [3. 0. 0. 0.]]
+ """
+# 关键区别
+# 例1：res[:, :] 是一个完整的二维数组视图，形状是 (3, 4)
+# 例2：arr[:, 0] 是一个一维列切片，形状是 (3,)
+
+# 将多个列表"并排"组合
+names = ['Alice', 'Bob', 'Charlie']
+ages = [25, 30, 35]
+scores = [85, 92, 78]
+
+paired = list(zip(names, ages, scores))
+# [('Alice', 25, 85), ('Bob', 30, 92), ('Charlie', 35, 78)]
+
+# 按某个列表排序，同时保持其他列表对应关系
+names = ['Charlie', 'Alice', 'Bob']
+scores = [78, 85, 92]
+
+# 按分数排序
+sorted_pairs = sorted(zip(scores, names))
+# [(78, 'Charlie'), (85, 'Alice'), (92, 'Bob')]
+
+# 按名字排序
+sorted_by_name = sorted(zip(names, scores))
+
+
+#  [('Alice', 85), ('Bob', 92), ('Charlie', 78)]
+
+
+# def calculate_total(price, quantity, tax_rate):
+#     return price * quantity * (1 + tax_rate)
+#
+#
+# prices = [10, 20, 30]
+# quantities = [2, 3, 1]
+# tax_rates = [0.1, 0.15, 0.2]
+#
+# totals = list(map(calculate_total, prices, quantities, tax_rates))  # map(func, *iterables)
+# # Make an iterator that computes the function using arguments from each of the iterables
+# a = [calculate_total(*args) for args in zip(prices, quantities, tax_rates)]
+# print(a)
+# print(totals)
+
+# 筛选及格的人
+# names = ['Alice', 'Bob', 'Charlie']
+# scores = [85, 42, 92]
+#
+# a = [(name, scores) for name, scores in zip(names, scores) if scores >= 60]
+# b = list(filter(lambda x: x[1] >= 60, zip(names, scores)))  # filter(func, *iterables)
+# print(b)
+#
+#
+# from collections import defaultdict, Counter
+#
+# # 分组统计(原格式 元组）
+# data = [('apple', 'fruit'), ('carrot', 'vegetable'),
+#         ('banana', 'fruit'), ('potato', 'vegetable')]
+#
+# grouped = defaultdict(list)
+# for item, category in data: # 直接解包元组
+#     grouped[category].append(item)
+#     # defaultdict(<class 'list'>, {'fruit': ['apple', 'banana'], 'vegetable': ['carrot', 'potato']})
+#
+# # 计数
+# counts = Counter(grouped.get('fruit',None))
+# # Counter({'apple': 1, 'banana': 1})
+import pandas as pd
+

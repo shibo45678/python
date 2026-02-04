@@ -26,7 +26,7 @@ from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, D
 from data.data_preprocessing import SimpleTimeSampler
 from data.feature_engineering import (WeatherGenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
                                       UnifiedFeatureScaler, CategoricalEncoding, OrdinalCategoricalEncoder,
-                                      CustomPowerTransformer,CustomQuantileTransformer)
+                                      CustomTransformer,CustomQuantileTransformer)
 from data.exploration import VisualizationForNeural
 from deployment import DeploymentManager
 from predictor import TrainedModelPredictor
@@ -68,10 +68,10 @@ def main():
         # {'isolationforest': {'columns': [], 'handle_method': [], 'contamination': 0.025,
         #                      'random_state': 42}},
         # {'zscore': {'columns': [], 'handle_method': [], 'threshold': 3}},
-        # {'custom': {'columns': ['auto_handle_remain'], 'handle_method': ['clip'], 'skip_handle': [],
-        #             'detect_function': partial(detector.recommend_detection_method)}}
+        {'custom': {'columns': ['auto_handle_remain'], 'handle_method': ['ignore'], 'skip_handle': [],
+                    'detect_function': partial(detector.recommend_detection_method)}}
     ],
-        'generate_outlier_indicator': ['T', 'rh'],
+        'generate_outlier_indicator': ['T','rh'],
     }
 
     categorical_outliers_config = {
@@ -90,6 +90,7 @@ def main():
         'smart_fill_remain': True,
         'important_columns': ['T', 'rh'],
     }
+
     # 新特征生成后
     scaling_config = {
         'transformers': [
@@ -115,10 +116,13 @@ def main():
                       ProblemColumnsFixed(problem_columns=['wv']), SpecialColumnsFixed(problem_columns=['T']),  # wv 一样
                       CheckExtreFeatures(method_config=check_outliers_config,
                                          download_config=download_outliers_details_config),
+
+                      NumericMissingValueHandler(method_config=numeric_missing_config),
+                      CategoricalMissingValueHandler(method_config=None, pass_through=True),  # 后续隔离森林精细去异常
+
                       NumericOutlierProcessor(method_config=numeric_outliers_config),  # iqr / 业务初筛 --> 异常值初筛
                       CategoricalOutlierProcessor(method_config=categorical_outliers_config, strategy='consolidate'),
-                      NumericMissingValueHandler(method_config=numeric_missing_config),  # 填充缺失值(时间缺失 暂不填充。等采样完）
-                      CategoricalMissingValueHandler(method_config=None, pass_through=True),  # 后续隔离森林精细去异常
+
                       ],
          'len_change': False},
 
@@ -129,9 +133,11 @@ def main():
                                                    create_statistical=True),
                       GenerationFromTimeseries(time_column='Date Time', plot=False),
                       BasedOnCorrSelector(pass_through=True),
-
-                      # CustomPowerTransformer(method='yeo-johnson', standardize=False,pass_through=False),
-                      CustomQuantileTransformer(output_distribution='normal', n_quantiles=1000, random_state=42, pass_through=False),
+                      CustomTransformer(model_name='lstm', pass_through=False, power_columns=['rh','wv_y', 'max. wv_y'],
+                                        power_method='yeo-johnson', power_standardize=False,
+                                        power_skip=['hour_cos', 'Season_cos', 'day_of_year_sin', 'day_of_year_cos', 'hour_sin', 'is_night', 'Season_sin'],
+                                        asinh_columns=[],asinh_skip=[],
+                                        asinh_scale_factor=1.0),
                       UnifiedFeatureScaler(method_config=scaling_config, algorithm='lstm'),  # 自动根据数据分布及算法类型进行推荐标准化
                       OrdinalCategoricalEncoder(encode_order_cols={
                           'segments': ['极寒', '严寒', '寒冷', '冰点下', '低温', '凉', '舒适', '暖', '热']},
@@ -149,7 +155,7 @@ def main():
     df_train, df_val, df_test = splitter.learn_process(raw_data)
     logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
 
-    # 调整测试集样本量 （保证时间连续性，逆转换时间列匹配）
+    # * 检查时间序列的连续性：调整测试集样本量，逆转换时间列匹配
     continuous = ProcessContinuous(interactive=False, create_extract_continuous=True)
     df_test_adjust, _ = continuous.learn_process(df_test, y=None)  # 只选择连续的样本集
 
@@ -236,7 +242,7 @@ def main():
         'learning_rate': 0.00035,
         'units': [192],  # len控制lstm的层数
         'return_sequences': [False],
-        'epochs': 50,
+        'epochs': 30,
         'verbose': 2,
         # 'continue_from': '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm1_20260106_202506'# 指定目录
     }}
@@ -297,14 +303,15 @@ def main():
             logger.info(
                 f"测试集生成 {len(raw_predictions)} 个预测结果，每个结果代表一个预测label，形状：shape:{raw_predictions[list(config.get('output_config').keys())[0]].shape}")
 
-            # 5. 逆转换（使用后处理器）预测数据 + 原始数据（用于训练的数值列里面的2分类列，未标准化，需要排除掉）
+            # 5. 逆标准化/编码（使用后处理器）预测数据 + 原始数据（用于训练的数值列里面的2分类列，未标准化，需要排除掉）
             inverse_predictions = postprocessor.custom_inverse_transform(
                 raw_predictions=raw_predictions,
                 use_saved=False,  # 使用【内存】中的preprocessor
                 task_config=config.get('output_config'),
                 output_width=config.get('output_width'),
                 pipeline_name='pipeline_4',
-                step_names=['engineer_4', 'engineer_5'])
+                scale_step_names=['engineer_4', 'engineer_5'],
+                transform_step_name='engineer_3')
 
             # 6. 添加时间戳
             final_pred_results, predictions_dict = postprocessor.add_timestamps(
