@@ -123,7 +123,10 @@ class SingleTaskLstmModel:
         # 单层LSTM配置
         if len(units) == 1:
             x = tf.keras.layers.LSTM(units=units[0], return_sequences=return_sequences[0], activation='tanh',
-                                     name='lstm_0')(
+                                     name='lstm_0',
+                                     # dropout=0.3,  # 循环dropout（对输入门、遗忘门、输出门）
+                                     # recurrent_dropout=0.2 # 状态dropout（对循环连接）
+                                     )(
                 x)
             x = tf.keras.layers.Dropout(0.2, seed=42)(x)
 

@@ -1723,3 +1723,39 @@ sorted_by_name = sorted(zip(names, scores))
 # # Counter({'apple': 1, 'banana': 1})
 import pandas as pd
 
+import numpy as np
+
+# 示例数据
+X = np.array([
+    [1.0, 2.0, np.nan],   # 第0行：有NaN
+    [4.0, 5.0, 6.0],      # 第1行：没有NaN
+    [np.nan, 8.0, 9.0],   # 第2行：有NaN
+    [10.0, 11.0, 12.0]    # 第3行：没有NaN
+])
+
+# 步骤1: np.isnan(X_np) - 找出所有NaN位置
+nan_mask = np.isnan(X)
+"""
+array([[False, False,  True],  # 第0行，第2列是NaN
+       [False, False, False],  # 第1行，没有NaN
+       [ True, False, False],  # 第2行，第0列是NaN
+       [False, False, False]]) # 第3行，没有NaN
+"""
+
+# 步骤2: np.any(..., axis=1) - 检查每行是否有至少一个True
+row_mask = np.any(nan_mask, axis=1)
+"""
+array([ True,  False,  True,  False])
+# 解释：
+# 第0行：有True → True
+# 第1行：全False → False  
+# 第2行：有True → True
+# 第3行：全False → False
+"""
+
+# 步骤3: 用~取反，选择没有NaN的行
+X_clean = X[~row_mask]
+"""
+array([[ 4.,  5.,  6.],
+       [10., 11., 12.]])
+"""

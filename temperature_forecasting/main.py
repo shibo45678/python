@@ -22,11 +22,11 @@ from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, D
                                    ColumnsTypeIdentify,
                                    ConvertCategoricalColumns,
                                    ConvertNumericColumns, ProcessTimeseriesColumns, ProcessContinuous,
-                                   StatisticsOutlierDetector)
+                                   StatisticsOutlierDetector, RemoveMissingHandler)
 from data.data_preprocessing import SimpleTimeSampler
 from data.feature_engineering import (WeatherGenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
                                       UnifiedFeatureScaler, CategoricalEncoding, OrdinalCategoricalEncoder,
-                                      CustomTransformer,CustomQuantileTransformer)
+                                      CustomTransformer, CustomQuantileTransformer)
 from data.exploration import VisualizationForNeural
 from deployment import DeploymentManager
 from predictor import TrainedModelPredictor
@@ -71,7 +71,7 @@ def main():
         {'custom': {'columns': ['auto_handle_remain'], 'handle_method': ['ignore'], 'skip_handle': [],
                     'detect_function': partial(detector.recommend_detection_method)}}
     ],
-        'generate_outlier_indicator': ['T','rh'],
+        'generate_outlier_indicator': ['T', 'rh'],
     }
 
     categorical_outliers_config = {
@@ -94,11 +94,12 @@ def main():
     # 新特征生成后
     scaling_config = {
         'transformers': [
-            {'standard': {'columns': []}},# 'p', , 'Tpot', 'Tdew', 'rh', 'VPmax', 'VPact', 'VPdef', 'sh', 'H2OC', 'rho', 'wv', 'max. wv', 'wd'
-            {'minmax': {'columns': ['rh'], 'feature_range': (0, 1)}}, # rh有界变量（0～100），MinMax 天然匹配
+            {'standard': {'columns': []}},
+            # 'p', , 'Tpot', 'Tdew', 'rh', 'VPmax', 'VPact', 'VPdef', 'sh', 'H2OC', 'rho', 'wv', 'max. wv', 'wd'
+            {'minmax': {'columns': ['rh'], 'feature_range': (0, 1)}},  # rh有界变量（0～100），MinMax 天然匹配
             # 相同方法，相同其他参数配置，在columns列表填写
             {'minmax': {'columns': [], 'feature_range': (-1, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
-            {'robust': {'columns': ['T','wv_y','max. wv_x','max. wv_y'], 'quantile_range': (25, 75)}}
+            {'robust': {'columns': ['T', 'wv_y', 'max. wv_x', 'max. wv_y'], 'quantile_range': (25, 75)}}
         ],
         'skip_scale': ['is_night', 'hour_sin', 'hour_cos', 'day_of_year_cos', 'day_of_year_sin', 'Season_sin',
                        'Season_cos']  # 跳过二分类列(数值型）/ 异常值标记列自动skip
@@ -121,28 +122,30 @@ def main():
                       CategoricalMissingValueHandler(method_config=None, pass_through=True),  # 后续隔离森林精细去异常
 
                       NumericOutlierProcessor(method_config=numeric_outliers_config),  # iqr / 业务初筛 --> 异常值初筛
-                      CategoricalOutlierProcessor(method_config=categorical_outliers_config, strategy='consolidate'),
+                      CategoricalOutlierProcessor(method_config=categorical_outliers_config, strategy='consolidate')
+                      ], 'len_change': False},
 
-                      ],
-         'len_change': False},
-
-        {'obj_list': [SimpleTimeSampler(time_column='Date Time', freq_hours=1, minute=0, second=0)],
-         'len_change': True},
+        {'obj_list': [SimpleTimeSampler(time_column='Date Time', freq_hours=1, minute=0, second=0)],'len_change': True},
 
         {'obj_list': [WeatherGenerationFromNumeric(selected_columns=['wd', 'wv', 'max. wv', 'Tdew', 'T', 'rh'],
-                                                   create_statistical=True),
-                      GenerationFromTimeseries(time_column='Date Time', plot=False),
+                                                   create_statistical=True)], 'len_change': False},
+
+        {'obj_list': [RemoveMissingHandler(pass_through=False)], 'len_change': True},
+
+        {'obj_list': [GenerationFromTimeseries(time_column='Date Time', plot=False),
                       BasedOnCorrSelector(pass_through=True),
-                      CustomTransformer(model_name='lstm', pass_through=False, power_columns=['rh','wv_y', 'max. wv_y'],
+                      CustomTransformer(model_name='lstm', pass_through=False,
+                                        power_columns=['rh', 'wv_y', 'max. wv_y'],
                                         power_method='yeo-johnson', power_standardize=False,
-                                        power_skip=['hour_cos', 'Season_cos', 'day_of_year_sin', 'day_of_year_cos', 'hour_sin', 'is_night', 'Season_sin'],
-                                        asinh_columns=[],asinh_skip=[],
+                                        power_skip=['hour_cos', 'Season_cos', 'day_of_year_sin', 'day_of_year_cos',
+                                                    'hour_sin', 'is_night', 'Season_sin'],
+                                        asinh_columns=[], asinh_skip=[],
                                         asinh_scale_factor=1.0),
                       UnifiedFeatureScaler(method_config=scaling_config, algorithm='lstm'),  # 自动根据数据分布及算法类型进行推荐标准化
                       OrdinalCategoricalEncoder(encode_order_cols={
                           'segments': ['极寒', '严寒', '寒冷', '冰点下', '低温', '凉', '舒适', '暖', '热']},
                           handle_unknown='use_encoded_value', unknown_value=-1),
-                      VisualizationForNeural(pass_through=False),
+                      VisualizationForNeural(pass_through=True),
                       ], 'len_change': False},
     ]
 
@@ -183,8 +186,8 @@ def main():
     features_temp_val, _ = preprocessor.transform_predict(features=df_val, labels=None)
     features_temp_test, _ = preprocessor.transform_predict(features=df_test_adjust, labels=None)
 
-    num_cols = preprocessor.get_specific_attribute(4, 'engineer_4', 'numeric_columns_')  # 取第5个class的第4步的属性
-    cat_cols = preprocessor.get_specific_attribute(4, 'engineer_5', 'categorical_columns_')
+    num_cols = preprocessor.get_specific_attribute(6, 'engineer_3', 'numeric_columns_')  # 取第7个class的第4步的属性
+    cat_cols = preprocessor.get_specific_attribute(6, 'engineer_4', 'categorical_columns_')
     time_col = preprocessor.get_specific_attribute(2, 'engineer_1', 'valid_time_column_')
 
     # 4. 并行模型训练、评估
@@ -242,7 +245,9 @@ def main():
         'learning_rate': 0.00035,
         'units': [192],  # len控制lstm的层数
         'return_sequences': [False],
-        'epochs': 30,
+        'early_stop_patience' : 5,
+        'reduce_lr_patience' : 3,
+        'epochs': 50,
         'verbose': 2,
         # 'continue_from': '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm1_20260106_202506'# 指定目录
     }}
@@ -309,9 +314,9 @@ def main():
                 use_saved=False,  # 使用【内存】中的preprocessor
                 task_config=config.get('output_config'),
                 output_width=config.get('output_width'),
-                pipeline_name='pipeline_4',
-                scale_step_names=['engineer_4', 'engineer_5'],
-                transform_step_name='engineer_3')
+                pipeline_name='pipeline_6',
+                scale_step_names=['engineer_3', 'engineer_4'],
+                transform_step_name='engineer_2')
 
             # 6. 添加时间戳
             final_pred_results, predictions_dict = postprocessor.add_timestamps(
@@ -433,6 +438,8 @@ if __name__ == "__main__":
 #     'return_sequences': [True, False],  # 上一轮的输出做本轮输入input + 上一轮输出
 #     'epochs': 50,
 #     'verbose': 2
+# 'early_stop_patience': 5,
+# 'reduce_lr_patience': 2,
 # }}
 
 # multi_cnn_model_config = {**base_model_config, **{

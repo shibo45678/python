@@ -161,10 +161,10 @@ class DeploymentManager:
         time_col = self.model_config.get('time_column')
 
         if hasattr(self.preprocessor, 'get_specific_attribute'):
-            num_cols_input = self.preprocessor.get_specific_attribute(4, 'engineer_4',
+            num_cols_input = self.preprocessor.get_specific_attribute(6, 'engineer_3',
                                                                       'numeric_columns_')  # 取第5个class的第4步的属性
-            num_cols_inverse = self.preprocessor.get_specific_attribute(4, 'engineer_4', 'without_outlier_missing_columns_')
-            cat_cols_input = self.preprocessor.get_specific_attribute(4, 'engineer_5', 'categorical_columns_')
+            num_cols_inverse = self.preprocessor.get_specific_attribute(6, 'engineer_3', 'without_outlier_missing_columns_')
+            cat_cols_input = self.preprocessor.get_specific_attribute(6, 'engineer_4', 'categorical_columns_')
 
             columns = {
                 'num_cols_input': num_cols_input,

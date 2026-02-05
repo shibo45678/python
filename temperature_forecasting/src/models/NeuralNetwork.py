@@ -112,6 +112,10 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                                                                 valset=val_window_data,
                                                                 verbose=self.model_config['verbose'],
                                                                 epochs=self.model_config['epochs'],
+                                                                early_stop_patience=self.model_config[
+                                                                    'early_stop_patience'],
+                                                                reduce_lr_patience=self.model_config[
+                                                                    'reduce_lr_patience'],
                                                                 weights_dir=self.weights_dir,
                                                                 # 继续训练
                                                                 continue_from_experiment=self.model_config.get(
@@ -133,6 +137,8 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                                                                  valset=val_window_data,
                                                                  verbose=self.model_config['verbose'],
                                                                  epochs=self.model_config['epochs'],
+                                                                 early_stop_patience =self.model_config['early_stop_patience'],
+                                                                 reduce_lr_patience=self.model_config['reduce_lr_patience'],
                                                                  weights_dir=self.weights_dir,
                                                                  )
 
@@ -523,7 +529,7 @@ class TimeSeriesPostProcessor:
 
 
 
-    def _inverse_transform_live(self, prediction: np.ndarray, pipeline_name='pipeline_4',
+    def _inverse_transform_live(self, prediction: np.ndarray, pipeline_name='pipeline_6',
                                 scale_step_names=None, target_column: str = None, task_type: str = None,transform_step_name=None) -> np.ndarray:
 
         logger.debug(f"[DEBUG] _inverse_transform_live 开始")
@@ -533,10 +539,10 @@ class TimeSeriesPostProcessor:
         logger.debug(f"scale_step_names: {scale_step_names}")
 
         if scale_step_names is None:
-            scale_step_names = ['engineer_4', 'engineer_5']
+            scale_step_names = ['engineer_3', 'engineer_4']
 
         if transform_step_name is None:
-            transform_step_name = 'engineer_3'
+            transform_step_name = 'engineer_2'
 
         result = prediction
 
@@ -544,7 +550,7 @@ class TimeSeriesPostProcessor:
             transformer = self._temp_preprocessor.pipelines_[pipeline_name].named_steps[step_name]
 
             # 逆标准化
-            if step_name == 'engineer_4':
+            if step_name == 'engineer_3':
                 valid_col = transformer.without_outlier_missing_columns_
 
                 # 普通数值列（非二分类列：特征/标记）
@@ -561,7 +567,7 @@ class TimeSeriesPostProcessor:
                     logger.debug(f"目标列{target_column}不需要数值列的逆标准化转换或者二分阈值管理")
 
             # 逆编码
-            elif step_name == 'engineer_5':
+            elif step_name == 'engineer_4':
                 valid_col = transformer.categorical_columns_
 
                 # 多分类 概率数组: (batch, timesteps, num_classes)
@@ -589,14 +595,14 @@ class TimeSeriesPostProcessor:
 
         return result
 
-    def _inverse_transform_from_saved(self, prediction: np.ndarray, pipeline_name='pipeline_4',
+    def _inverse_transform_from_saved(self, prediction: np.ndarray, pipeline_name='pipeline_6',
                                       scale_step_names=None, target_column=None, task_type: str = None,transform_step_name=None) -> np.ndarray:
 
         if scale_step_names is None:
-            scale_step_names = ['engineer_4', 'engineer_5']
+            scale_step_names = ['engineer_3', 'engineer_4']
 
         if transform_step_name is None:
-            transform_step_name = ['engineer_3']
+            transform_step_name = ['engineer_2']
 
         result = prediction
 
@@ -609,7 +615,7 @@ class TimeSeriesPostProcessor:
                     transformer = pickle.loads(state_info['pickled'])
 
                     if hasattr(transformer, 'custom_inverse_transform'):
-                        if step_name == 'engineer_4':
+                        if step_name == 'engineer_3':
                             valid_col = transformer.without_outlier_missing_columns_
                             if target_column is not None and task_type == 'regression' and target_column in valid_col:
                                 result = transformer.custom_inverse_transform(scaled_data=result,

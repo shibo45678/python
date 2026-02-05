@@ -174,7 +174,8 @@ class CompletePreprocessor(BaseCleaner):
                     # 保存处理类信息和初始化参数（用于后续创建新实例）
                     processor_info = {
                         'class': type(cleaner),
-                        'instance': cleaner
+                        'instance': cleaner,
+                        'init_params':self._extract_init_params(cleaner)
                     }
 
                     processor_info_list.append(processor_info)
@@ -239,7 +240,7 @@ class CompletePreprocessor(BaseCleaner):
                 for cleaner in cleaners_info_list:
                     # 获取该类新实例
                     cleaner_class = cleaner.get('class')
-                    cleaner_init_params = cleaner.get('init_params', {})
+                    cleaner_init_params = cleaner.get('init_params', {})  # 实际就是没有的，仅仅是写在这里
 
                     new_cleaner = cleaner_class(**cleaner_init_params)
                     features_temp, labels_temp = new_cleaner.learn_process(features_temp, labels_temp)
@@ -250,6 +251,22 @@ class CompletePreprocessor(BaseCleaner):
                     features_temp = pipeline.transform(features_temp)
 
         return features_temp, labels_temp
+
+    def _extract_init_params(self,instance):
+        params ={}
+
+        import inspect
+        init_signature=inspect.signature(instance.__class__.__init__)
+
+        for param_name in init_signature.parameters.keys():
+            if param_name == 'self':
+                continue
+            if hasattr(instance,param_name):
+                params[param_name] =getattr(instance,param_name)
+        return params
+
+
+
 
     def get_all_attributes(self):
         all_attributes = {}  # {pipeline_1: steps_info}  steps_info={step_name:[attributes]}
