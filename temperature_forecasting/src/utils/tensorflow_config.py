@@ -1,6 +1,20 @@
 import os
+
+import numpy as np
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 在 import 之前设置！
+os.environ['PYTHONHASHSEED'] = '42'
+os.environ['TF_DETERMINISTIC_OPS'] = '1'
+os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+
 import tensorflow as tf
+
+tf.config.experimental.enable_op_determinism()
+import random
+random.seed(42)
+np.random.seed(42)
+tf.random.set_seed(42)
+
 
 
 class TensorFlowConfig:

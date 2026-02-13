@@ -6,11 +6,11 @@
 # 模型output_config是单列配置，优化成同一类配置可以一起跑。什么都不写默认回归？分类？
 # 缺失值填充 增加算法填充等
 # missing列logger 从提示改为报错 尽早暴露/结果无意义/
-# 统一下划线/标准化列有不存在需要提前验证
+# 统一下划线/标准化列有不存在需要提前验证、
+from utils.tensorflow_config import TensorFlowConfig
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from utils.tensorflow_config import TensorFlowConfig
 from models.NeuralNetwork import TimeSeriesEstimator, TimeSeriesPostProcessor, MetricsCalculator
 from pipelines.preprocess_pipeline import CompletePreprocessor
 from data.data_preprocessing import TimeSeriesSplitter
@@ -204,7 +204,7 @@ def main():
     #                                       'loss_weights': 1,
     #                                       'units': 1,
     #                                       }},
-    #                             'multi_tasks':False}
+    #
     #
     # single_lstm_model_config1 = {**single_base_model_config, **{
     #     'model_type': 'single_lstm1',
@@ -226,33 +226,48 @@ def main():
                                    'T': {'type': 'regression',  # 单变量回归
                                          'loss': 'mse',  # 主损失函数
                                          'metrics': ['mae'],  # 额外指标：平均绝对误差
-                                         'loss_weights': 0.8,
+                                         'loss_weights': 0.6,
                                          'units': 1,  # 每个时间步预测n个特征
                                          },
 
                                    'rh': {'type': 'regression',
                                           'loss': 'mse',
                                           'metrics': ['mae'],
-                                          'loss_weights': 0.2,
+                                          'loss_weights': 0.4,
                                           'units': 1,
                                           }
                                },
                                'multi_tasks': True,
                                }
 
-    multi_lstm_model_config1 = {**multi_base_model_config, **{
-        'model_type': 'multi_lstm1',
-        'learning_rate': 0.00035,
-        'units': [192],  # len控制lstm的层数
-        'return_sequences': [False],
-        'early_stop_patience' : 5,
-        'reduce_lr_patience' : 3,
-        'epochs': 50,
+    # multi_lstm_model_config1 = {**multi_base_model_config, **{
+    #     'model_type': 'multi_lstm1',
+    #     'learning_rate': 0.00035,
+    #     'units': [192],  # len控制lstm的层数
+    #     'return_sequences': [False],
+    #     'early_stop_patience' : 5,
+    #     'min_delta': 1e-6,
+    #     'monitor': 'val_T_loss',
+    #     'total_epochs': 50,
+    #     'verbose': 2,
+    # }}
+
+    multi_lstm_model_config2 = {**multi_base_model_config, **{
+        'model_type': 'multi_lstm2*',
+        'learning_rate': 0.00039,
+        'units': [256],  # 2:1
+        'return_sequences': [True],  # 上一轮的输出做本轮输入input + 上一轮输出
+        'early_stop_patience': 10,
+        'min_delta':1e-6,
+        'monitor' : 'val_T_loss',
+        'reduce_lr_patience':3,
+        'total_epochs': 50,
         'verbose': 2,
-        # 'continue_from': '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm1_20260106_202506'# 指定目录
+        'continue_from':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260213_114151/tf_checkpoints_stage0', # 首次训练必须为None.
     }}
 
     data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
+
 
     # 准备指标计算数据（回测用，预测不用） 采样后的原数据
     valid_df_test, _ = preprocessor._get_step(3, 0).process(df_test_adjust)  # 处理连续性测试集的采样步骤（第4个class,第0个实例) 采样
@@ -393,9 +408,8 @@ def main():
                 'config': config
             }
 
-    # parallel_train_all_models
 
-    configs = [multi_lstm_model_config1]  # multi_cnn_model_config
+    configs = [multi_lstm_model_config2]  # multi_cnn_model_config
 
     failed_configs = []
     trained_models = []
@@ -427,21 +441,8 @@ if __name__ == "__main__":
     matplotlib.use('Agg')
     main()
 
-# save的节点 是否是最佳模型
-# 多变量输出 如何协调权重，以及梯度剪裁
 
 # 并行的模型配置
-# multi_lstm_model_config2 = {**base_model_config, **{
-#     'model_type': 'multi_lstm2',
-#     'learning_rate': 0.001,
-#     'units': [64, 32],  # 逐步压缩特征
-#     'return_sequences': [True, False],  # 上一轮的输出做本轮输入input + 上一轮输出
-#     'epochs': 50,
-#     'verbose': 2
-# 'early_stop_patience': 5,
-# 'reduce_lr_patience': 2,
-# }}
-
 # multi_cnn_model_config = {**base_model_config, **{
 #     'model_type': 'cnn',
 #     'branch_filters': [[32, 32], [64, 64]],

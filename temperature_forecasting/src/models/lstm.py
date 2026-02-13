@@ -123,23 +123,21 @@ class SingleTaskLstmModel:
         # 单层LSTM配置
         if len(units) == 1:
             x = tf.keras.layers.LSTM(units=units[0], return_sequences=return_sequences[0], activation='tanh',
-                                     name='lstm_0',
-                                     # dropout=0.3,  # 循环dropout（对输入门、遗忘门、输出门）
-                                     # recurrent_dropout=0.2 # 状态dropout（对循环连接）
-                                     )(
+                                     name='lstm_0',                                                        )(
                 x)
             x = tf.keras.layers.Dropout(0.2, seed=42)(x)
 
         # 多层LSTM(...ing)
         else:
             for i, (u, s) in enumerate(zip(units, return_sequences)):  # units列表长度代表 LSTM 层数
-                x = tf.keras.layers.LSTM(units=u, return_sequences=s, activation='tanh', name=f'lstm_{i + 1}')(
+                x = tf.keras.layers.LSTM(units=u, return_sequences=s, activation='tanh', name=f'lstm_{i + 1}',
+                                         )(
                     x)
 
                 # LayerNorm 归一化层
                 x = tf.keras.layers.LayerNormalization(epsilon=1e-3, name=f'layernorm_{i}')(x)
 
-            x = tf.keras.layers.Dropout(0.2)(x)
+            # x = tf.keras.layers.Dropout(0.2)(x) # 改为针对特征任务的dropout
 
         outputs = []
         loss_dict = {}
@@ -147,13 +145,18 @@ class SingleTaskLstmModel:
 
         for output_name, config in output_config.items():
 
-            num_label = len(output_name)
+            # 统一获取输出维度
+            if config['type'] == 'classification':
+                output_dim = config.get('num_classes', 1)  # 优先用 num_classes，没有则默认1
+            else:
+                output_dim = config.get('units', 1)
 
             # 回归任务: 输出形状 (batch_size, 5, 1)
             if config['type'] == 'regression':
-                output_layer = tf.keras.layers.Dense(output_width * num_label,
+
+                output_layer = tf.keras.layers.Dense(output_width * output_dim,
                                                      name=f'dense_{output_name}')(x)
-                output_layer = tf.keras.layers.Reshape((output_width, num_label),
+                output_layer = tf.keras.layers.Reshape((output_width, output_dim),
                                                        name=f'reshape_{output_name}')(output_layer)
                 output_layer = tf.keras.layers.Activation('linear', name=output_name)(output_layer)
 
@@ -162,9 +165,9 @@ class SingleTaskLstmModel:
 
             # 分类任务: 输出形状 (batch_size, 5, n_categories)
             elif config['type'] == 'classification':
-                output_layer = tf.keras.layers.Dense(output_width * config['num_classes'],
+                output_layer = tf.keras.layers.Dense(output_width * output_dim,
                                                      name=f'dense_{output_name}')(x)
-                output_layer = tf.keras.layers.Reshape((output_width, config['num_classes']),
+                output_layer = tf.keras.layers.Reshape((output_width, output_dim),
                                                        name=f'reshape_{output_name}')(output_layer)
                 output_layer = tf.keras.layers.Activation('softmax', name=output_name)(
                     output_layer)  # Keras模型输出名称由最后一个被命名的层决定
@@ -173,18 +176,18 @@ class SingleTaskLstmModel:
                 metric_dict[output_name] = config.get('metrics', ['accuracy'])
 
             elif config['type'] == 'binary_classification':
-                output_layer = tf.keras.layers.Dense(output_width * config['num_classes'],
+                output_layer = tf.keras.layers.Dense(output_width * output_dim,
                                                      name=f'dense_{output_name}')(x)
-                output_layer = tf.keras.layers.Reshape((output_width, config['num_classes']),
+                output_layer = tf.keras.layers.Reshape((output_width, output_dim),
                                                        name=f'reshape_{output_name}')(output_layer)
                 output_layer = tf.keras.layers.Activation('sigmoid', name=output_name)(output_layer)
                 loss_dict[output_name] = config.get('loss', 'binary_crossentropy')
                 metric_dict[output_name] = config.get('metrics', ['accuracy'])
 
             else:
-                output_layer = tf.keras.layers.Dense(output_width * num_label,
+                output_layer = tf.keras.layers.Dense(output_width * output_dim,
                                                      name=f'dense_{output_name}')(x)
-                output_layer = tf.keras.layers.Reshape((output_width, num_label),
+                output_layer = tf.keras.layers.Reshape((output_width, output_dim),
                                                        name=f'reshape_{output_name}')(output_layer)
                 output_layer = tf.keras.layers.Activation('linear', name=output_name)(output_layer)
 
@@ -299,21 +302,27 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
         # 单层LSTM配置
         if len(units) == 1:
             x = tf.keras.layers.LSTM(units=units[0], return_sequences=return_sequences[0], activation='tanh',
-                                     name='lstm_0')(
+                                     name='lstm_0',
+                                     # LSTM内部的dropout可能影响序列信息的传递
+                                     dropout=0.1,  # 循环dropout（对输入门、遗忘门、输出门） 影响：输入特征层面的随机性 ，作用：防止模型过度依赖某些特定输入特征
+                                     recurrent_dropout=0.05  # 状态dropout（对循环连接） 影响：时间维度的随机性，作用：防止模型过度依赖特定的时间模式，值设置小
+                                     )(
                 x)
-            x = tf.keras.layers.Dropout(0.2)(x)
+            # x = tf.keras.layers.Dropout(0.1)(x)
+            x = tf.keras.layers.LayerNormalization(epsilon=1e-3, name=f'layernorm')(x)
 
         # 多层LSTM(...ing)
         else:
             for i, (u, s) in enumerate(zip(units, return_sequences)):  # units列表长度代表 LSTM 层数
-                x = tf.keras.layers.LSTM(units=u, return_sequences=s, activation='tanh', dropout=0.1,
-                                         recurrent_dropout=0.05, name=f'lstm_{i + 1}')(
+                x = tf.keras.layers.LSTM(units=u, return_sequences=s, activation='tanh',
+                                         dropout=0.08,recurrent_dropout=0.05,
+                                         name=f'lstm_{i + 1}')(
                     x)
 
                 # 可选：LayerNorm 归一化层
                 x = tf.keras.layers.LayerNormalization(epsilon=1e-3, name=f'layernorm_{i}')(x)
 
-            x = tf.keras.layers.Dropout(0.2)(x)
+            # x = tf.keras.layers.Dropout(0.1)(x) # 共享层
 
         # 多任务输出（每个单独一层）
         outputs =   {}
@@ -331,8 +340,29 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
 
                 # 回归任务: 输出形状 (batch_size, 5, 1)
             if config['type'] == 'regression':
-                output_layer = tf.keras.layers.Dense(output_width * output_dim,
-                                                     name=f'dense_{output_name}')(x)
+
+                if output_name == 'T':  # T任务
+                    task_specific = tf.keras.layers.LSTM(units = 144,return_sequences=False,activation = 'tanh',name=f'lstm_T_2',
+                                                         dropout=0.00,recurrent_dropout=0.00,
+                                                         )(x)
+                    # task_specific = tf.keras.layers.Dense(64, activation='relu', name=f'T_hidden1')(task_specific)
+                    task_specific = tf.keras.layers.Dropout(0.3, name=f'dropout_{output_name}')(task_specific)
+                    output_layer = tf.keras.layers.Dense(output_width * output_dim,name=f'dense_{output_name}')(task_specific)
+
+                else:  # rh任务
+                    task_specific = tf.keras.layers.LSTM(units = 96,return_sequences=False,activation = 'tanh',name=f'lstm_rh_2',
+                                                         dropout=0.00,recurrent_dropout=0.00,
+                                                         )(x)
+                    # task_specific= tf.keras.layers.Dense(48, activation='relu', name=f'rh_hidden1')(task_specific) # 解决rh 欠拟合的专用层
+                    task_specific = tf.keras.layers.Dropout(0.05, name=f'dropout_{output_name}')(task_specific)
+                    output_layer = tf.keras.layers.Dense(output_width * output_dim,name=f'dense_{output_name}')(task_specific)
+
+                # ** 确保T和rh分支都是从原始的共享特征x开始，而不是一个分支的输出作为另一个分支的输入
+                # ** 如果要建立rh专用层，这里需要取消。在具体任务处写Dense
+
+                # output_layer = tf.keras.layers.Dense(output_width * output_dim,  # 分解到具体任务
+                #                                      name=f'dense_{output_name}')(task_specific)
+
                 output_layer = tf.keras.layers.Reshape((output_width, output_dim),
                                                        name=f'reshape_{output_name}')(output_layer)
                 output_layer = tf.keras.layers.Activation('linear', name=output_name)(output_layer)
@@ -382,7 +412,7 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
         model = tf.keras.Model(inputs=all_inputs, outputs=outputs)
 
         model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=learning_rate),
+            optimizer=tf.keras.optimizers.AdamW(learning_rate=learning_rate,weight_decay=1e-5),
             loss=loss_dict,
             loss_weights=loss_weights,
             metrics=metric_dict

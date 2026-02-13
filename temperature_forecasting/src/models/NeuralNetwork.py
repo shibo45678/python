@@ -1,3 +1,6 @@
+import json
+import random
+
 import cloudpickle
 import pickle
 import warnings
@@ -5,9 +8,9 @@ from collections import defaultdict
 from datetime import datetime
 import os
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, BinaryIO
 import re
-
+import datetime
 import numpy as np
 from pydantic.v1 import validate_arguments
 from pydantic import Field
@@ -19,7 +22,14 @@ from training.training_models import TrainingMultiModel, TrainingSingleModel
 from data.windows import EnhancedWindowGenerator
 from evaluation.model_evaluation import ModelEvaluation
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
+
+
+
 import tensorflow as tf
+random.seed(42)
+np.random.seed(42)
+tf.random.set_seed(42)
+
 import pandas as pd
 from tensorflow.keras.regularizers import l2
 import logging
@@ -57,10 +67,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.forecast_window_gen_ = None
         self.train_window_gen_ = None
         self.forecast_window_config_ = None
-
-        import datetime
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.weights_dir = f"saved_model/{self.model_config['model_type']}_{timestamp}"
+        self.stage_number_=0
 
     def fit(self, X: dict, y=None):
         # 写出数据源
@@ -77,79 +84,111 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         #  构建模型 （神经网络预处理已经返回了模型期望的正确格式，不copy）
         # 1.1 获得embedding_info
         self.embedding_info_ = EmbeddingConfig._get_embedding_info(train_datasets_,  # 原始DF
-                                                                  self.model_config['categorical_columns']
-                                                                  )
+                                                                   self.model_config['categorical_columns']
+                                                                   )
 
         # 1.2 处理窗口数据
         self.train_window_gen_ = self._train_window_generator(self.model_config['output_config'])
         train_window_data = self.train_window_gen_.createDataset(train_datasets_)
         val_window_data = self.train_window_gen_.createDataset(val_datasets_)
 
-        # 多任务
+        continue_train = self.model_config.get('continue_from', None)
+
+        # 首次训练
+        if continue_train is None:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            basic_dir = f"saved_model/{self.model_config['model_type']}_{timestamp}"
+            os.makedirs(basic_dir, exist_ok=True)  # 存模型最佳检查点
+
+            continue_training_dir = os.path.join(basic_dir, 'continue_training')  # 继续训练文件夹
+            os.makedirs(continue_training_dir, exist_ok=True)
+
+            self._save_preprocessed_data(continue_training_dir=continue_training_dir, trainset=train_window_data,
+                                         valset=val_window_data)
+        # ====继续训练用====
+        else:
+            basic_dir = None
+            match = re.search(r"(.*)tf_checkpoints_stage(\d+)", str(continue_train))
+            continue_training_dir = os.path.join(match.group(1),'continue_training')
+            self.stage_number_ = int(match.group(2))+1
+
+        # ================
+
+        # 1.3 多任务/单任务分支
         if self.model_config['multi_tasks']:
 
             if self.model_config['model_type'].startswith('multi_lstm'):
-                lstm_model_config = {**self.model_config,
-                                     'embedding_configs': self.embedding_info_}
-                lstm_model = MultiTasksLstmModel(lstm_model_config)
+                model_config = {**self.model_config,
+                                'embedding_configs': self.embedding_info_}
+
+                lstm_model = MultiTasksLstmModel(model_config)
                 lstm_model_ = lstm_model._build_lstm_model()
                 self.training_model_ = lstm_model_
 
             elif self.model_config['model_type'].startswith('multi_cnn'):
-                cnn_model_config = {**self.model_config,  # 解包
-                                    'embedding_configs': self.embedding_info_}  # 追加
-                cnn_model = MultiTasksCnnModel(architecture_type='enhance_parallel', config=cnn_model_config)
+                model_config = {**self.model_config,  # 解包
+                                'embedding_configs': self.embedding_info_}  # 追加
+                cnn_model = MultiTasksCnnModel(architecture_type='enhance_parallel', config=model_config)
                 cnn_model_ = cnn_model._build_cnn_model()
                 self.training_model_ = cnn_model_
 
+            else:
+                raise ValueError(f"未支持的模型{self.model_config['model_type']}")
             # 1.4 训练模型
-            # 确保目录存在(立即创建)
-            os.makedirs(self.weights_dir, exist_ok=True)
-
             self.history_, best_checkpoint = TrainingMultiModel(model_name=self.model_config['model_type'],
-                                                                model=self.training_model_,
-                                                                trainset=train_window_data,
+                                                                model=self.training_model_, trainset=train_window_data,
                                                                 valset=val_window_data,
+                                                                basic_dir=basic_dir,
+                                                                total_epochs=self.model_config['total_epochs'],
                                                                 verbose=self.model_config['verbose'],
-                                                                epochs=self.model_config['epochs'],
+                                                                monitor=self.model_config['monitor'],
                                                                 early_stop_patience=self.model_config[
                                                                     'early_stop_patience'],
-                                                                reduce_lr_patience=self.model_config[
-                                                                    'reduce_lr_patience'],
-                                                                weights_dir=self.weights_dir,
-                                                                # 继续训练
-                                                                continue_from_experiment=self.model_config.get(
-                                                                    'continue_from')
-                                                                )
+                                                                min_delta=self.model_config[
+                                                                    'min_delta'],
+                                                                continue_from_experiment=self.model_config[
+                                                                    'continue_from'])
         # 单任务
         else:
             if self.model_config['model_type'].startswith('single_lstm'):
-                lstm_model_config = {**self.model_config,
-                                     'embedding_configs': self.embedding_info_}
-                lstm_model = SingleTaskLstmModel(lstm_model_config)
+                model_config = {**self.model_config,
+                                'embedding_configs': self.embedding_info_}
+                lstm_model = SingleTaskLstmModel(model_config)
                 lstm_model_ = lstm_model._build_lstm_model()
                 self.training_model_ = lstm_model_
+            else:
+                raise ValueError(f"未支持的模型{self.model_config['model_type']}")
 
-            os.makedirs(self.weights_dir, exist_ok=True)
             self.history_, best_checkpoint = TrainingSingleModel(model_name=self.model_config['model_type'],
-                                                                 model=self.training_model_,
-                                                                 trainset=train_window_data,
+                                                                 model=self.training_model_, trainset=train_window_data,
                                                                  valset=val_window_data,
+                                                                 basic_dir=basic_dir,
+                                                                 total_epochs=self.model_config['total_epochs'],
                                                                  verbose=self.model_config['verbose'],
-                                                                 epochs=self.model_config['epochs'],
-                                                                 early_stop_patience =self.model_config['early_stop_patience'],
-                                                                 reduce_lr_patience=self.model_config['reduce_lr_patience'],
-                                                                 weights_dir=self.weights_dir,
-                                                                 )
+                                                                 early_stop_patience=self.model_config[
+                                                                     'early_stop_patience'],
+                                                                 min_delta=self.model_config[
+                                                                     'min_delta'],
+                                                                 monitor = self.model_config['monitor'],
+                                                                 continue_from_experiment=self.model_config[
+                                                                     'continue_from'])
+
+        #  ====继续训练用====  存预处理数据 + 训练历史
+        self._save_model_config(continue_training_dir=continue_training_dir, config=model_config,
+                                stage_number=self.stage_number_)  # None
+
+        self._save_training_history(history=self.history_, continue_training_dir=continue_training_dir,
+                                    stage_number=self.stage_number_)
+        # ==================
 
         # 保存最佳检查点路径供后续使用
-        self.best_checkpoint = best_checkpoint
+        self.best_checkpoint = best_checkpoint  # epoch/
 
         # 训练完成后，创建用于预测的模型
-        self._prediction_model = self.load_best_model()
+        self._prediction_model = self.load_best_model(self.stage_number_)
 
         # 1.5 评估模型
-        self.evaluate_model(dataset=val_window_data, dataset_type='val')
+        self.evaluate_model(dataset=val_window_data, dataset_type='val',stage_number=self.stage_number_)
 
         self.is_fitted_ = True
 
@@ -167,21 +206,71 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         # 2. 重构模型
         if self.prediction_model_ is None:
-            self._prediction_model = self.load_best_model()  # 确保使用最佳权重
+            self._prediction_model = self.load_best_model(self.stage_number_)  # 确保使用最佳权重
 
         # 3. 模型预测
         predictions = self._prediction_model.predict(predict_window_data)  # 多输入和输出（tuple,dict）->预测结果是list
 
         return predictions
 
-    def load_best_model(self):
-        """重构用于预测的干净模型"""
+    def _save_preprocessed_data(self, continue_training_dir, trainset, valset):
+        model_name = self.model_config['model_type']
+        saved_data_path = os.path.join(continue_training_dir, f'{model_name}_preprocessed_data')
+        os.makedirs(saved_data_path, exist_ok=True)
+
+        train_save_path = os.path.join(saved_data_path, 'train_dataset')
+        trainset.save(train_save_path)
+
+        val_save_path = os.path.join(saved_data_path, 'val_dataset')
+        valset.save(val_save_path)
+
+    def _save_model_config(self, continue_training_dir, config, stage_number):
+        model_name = config.get('model_type')
+        saved_config_path = os.path.join(continue_training_dir, f'{model_name}_config_stage{stage_number}.cpkl')
+        with open(saved_config_path, 'wb') as f:
+            cloudpickle.dump(config, f)
+
+    def _save_training_history(self, history, continue_training_dir, stage_number):
+        model_name = self.model_config.get('model_type', 'unknown')
+        history_path = os.path.join(continue_training_dir, f'{model_name}_history_stage{stage_number}.cpkl')
+        csv_path = os.path.join(continue_training_dir, f'{model_name}_history_stage{stage_number}.csv')
+        # history 是一个 Keras History 对象 不可以直接dump
+        # history.history：字典 / history.params：字典（可序列化） / history.epoch：列表（可序列化） 其他不可序列化
+
+        if hasattr(history, 'history'):
+            history_dict = history.history if hasattr(history, 'history') else history
+            epochs = history.epoch if hasattr(history, 'epoch') else list(range(len(history_dict.get('loss', []))))
+            params = history.params if hasattr(history, 'params') else {}
+        else:
+            history_dict = history
+            epochs = list(range(1, len(next(iter(history_dict.values()))) ))
+            params = {}
+
+        history_data = {
+            'model_name': model_name,
+            'history': history_dict,
+            'epochs': [int(e) for e in epochs],
+            'params': params,
+            'stage': stage_number,
+            'save_time': datetime.datetime.now().isoformat()
+        }
+        with open(history_path, 'wb') as f:
+            cloudpickle.dump(history_data, f)
+
+        df = pd.DataFrame(history_dict)
+        df.insert(0, 'epoch', epochs)
+        df.to_csv(csv_path, index=False)
+        logger.info(f"训练历史保存到: {csv_path}")
+        return history_path,csv_path
+
+    def load_best_model(self,stage_number):
+        """用于预测的干净模型"""
 
         if not hasattr(self, 'best_checkpoint'):
             raise ValueError('未找到最佳模型检查点')
 
         checkpoint_dir = self.best_checkpoint
-        keras_file = os.path.join(checkpoint_dir, 'model.keras')  # 现在保存的是.keras格式，需要找到具体的.keras文件
+        keras_file = os.path.join(checkpoint_dir, f'model_stage{stage_number}.keras')  # 现在保存的是.keras格式，需要找到具体的.keras文件
 
         if not os.path.exists(keras_file):
             raise FileNotFoundError(
@@ -200,10 +289,10 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         return model
 
-    def evaluate_model(self, dataset, dataset_type='val'):
+    def evaluate_model(self, dataset, dataset_type='val',stage_number=0):
         """用任意数据评估已训练好的模型"""
         if not self._prediction_model:
-            model = self.load_best_model()
+            model = self.load_best_model(stage_number)
         else:
             model = self._prediction_model
 
@@ -460,7 +549,7 @@ class TimeSeriesPostProcessor:
         save_data = {
             'serialized_states': self.serialized_states,
             'config': self.config,
-            'saved_at': datetime.now().isoformat()
+            'saved_at': datetime.datetime.now().isoformat()
         }
         with state_file.open('wb') as f:
             pickle.dump(save_data, f)
@@ -526,11 +615,9 @@ class TimeSeriesPostProcessor:
 
         return processed_tasks
 
-
-
-
     def _inverse_transform_live(self, prediction: np.ndarray, pipeline_name='pipeline_6',
-                                scale_step_names=None, target_column: str = None, task_type: str = None,transform_step_name=None) -> np.ndarray:
+                                scale_step_names=None, target_column: str = None, task_type: str = None,
+                                transform_step_name=None) -> np.ndarray:
 
         logger.debug(f"[DEBUG] _inverse_transform_live 开始")
         logger.debug(f"target_column: {target_column}")
@@ -581,11 +668,13 @@ class TimeSeriesPostProcessor:
 
         if target_column is not None:
             if target_column in other_transformer.valid_asinh_columns_:
-                result = other_transformer.custom_inverse_transform(transformed_data=result,target_column=target_column,transform_type = 'asinh')
+                result = other_transformer.custom_inverse_transform(transformed_data=result,
+                                                                    target_column=target_column, transform_type='asinh')
 
             # PowerTransformer 逆转换单列时需要模拟原始列数，但只填充目标列。
-            elif target_column in other_transformer.valid_power_columns_: # batch, output_width
-                result = other_transformer.custom_inverse_transform(transformed_data=result,target_column=target_column,transform_type = 'power')
+            elif target_column in other_transformer.valid_power_columns_:  # batch, output_width
+                result = other_transformer.custom_inverse_transform(transformed_data=result,
+                                                                    target_column=target_column, transform_type='power')
 
             else:
                 logger.debug(f"目标列{target_column}不需要powertransform/asinh等逆转换")
@@ -596,7 +685,8 @@ class TimeSeriesPostProcessor:
         return result
 
     def _inverse_transform_from_saved(self, prediction: np.ndarray, pipeline_name='pipeline_6',
-                                      scale_step_names=None, target_column=None, task_type: str = None,transform_step_name=None) -> np.ndarray:
+                                      scale_step_names=None, target_column=None, task_type: str = None,
+                                      transform_step_name=None) -> np.ndarray:
 
         if scale_step_names is None:
             scale_step_names = ['engineer_3', 'engineer_4']
