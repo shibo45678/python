@@ -19,7 +19,7 @@ class DeploymentManager:
         self.window_config = window_config
         self.window_generator= window_generator
 
-    def save(self, deployment_path='/Users/shibo/Python/NeuralNetwork/deployment_directory/saved_model'):
+    def save(self, deployment_path='/Users/shibo/Python/NeuralNetwork/deployment_package/saved_model'):
 
         # 创建部署目录
         self.deploy_path = Path(deployment_path)

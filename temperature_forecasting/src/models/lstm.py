@@ -298,6 +298,12 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
           -a. 如果LSTM是第1层，那么输入就是(64+inputs.shape[1])个特征值。
           -b. 如果是后续层，接在另一个LSTM层之后(且前一层的return_sequences=True),那么输入维度将是前一层的输出维度 64,总输入=64+64=128
         """
+        def get_seed_generator(start=100):
+            seed=start
+            while True:
+                yield seed
+                seed += 1
+        seed_gen=get_seed_generator(1000)
 
         # 单层LSTM配置
         if len(units) == 1:
@@ -305,24 +311,24 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
                                      name='lstm_0',
                                      # LSTM内部的dropout可能影响序列信息的传递
                                      dropout=0.1,  # 循环dropout（对输入门、遗忘门、输出门） 影响：输入特征层面的随机性 ，作用：防止模型过度依赖某些特定输入特征
-                                     recurrent_dropout=0.05  # 状态dropout（对循环连接） 影响：时间维度的随机性，作用：防止模型过度依赖特定的时间模式，值设置小
+                                     recurrent_dropout=0.05 , # 状态dropout（对循环连接） 影响：时间维度的随机性，作用：防止模型过度依赖特定的时间模式，值设置小
                                      )(
                 x)
-            # x = tf.keras.layers.Dropout(0.1)(x)
+            # x = tf.keras.layers.Dropout(0.1,seed=next(seed_gen))(x)
             x = tf.keras.layers.LayerNormalization(epsilon=1e-3, name=f'layernorm')(x)
 
         # 多层LSTM(...ing)
         else:
             for i, (u, s) in enumerate(zip(units, return_sequences)):  # units列表长度代表 LSTM 层数
                 x = tf.keras.layers.LSTM(units=u, return_sequences=s, activation='tanh',
-                                         dropout=0.08,recurrent_dropout=0.05,
+                                         # dropout=0.08,recurrent_dropout=0.05,
                                          name=f'lstm_{i + 1}')(
                     x)
 
                 # 可选：LayerNorm 归一化层
                 x = tf.keras.layers.LayerNormalization(epsilon=1e-3, name=f'layernorm_{i}')(x)
 
-            # x = tf.keras.layers.Dropout(0.1)(x) # 共享层
+            # x = tf.keras.layers.Dropout(0.1,seed=next(seed_gen))(x) # 共享层
 
         # 多任务输出（每个单独一层）
         outputs =   {}
@@ -343,10 +349,9 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
 
                 if output_name == 'T':  # T任务
                     task_specific = tf.keras.layers.LSTM(units = 144,return_sequences=False,activation = 'tanh',name=f'lstm_T_2',
-                                                         dropout=0.00,recurrent_dropout=0.00,
-                                                         )(x)
+                                                         dropout=0.00,recurrent_dropout=0.00)(x)
                     # task_specific = tf.keras.layers.Dense(64, activation='relu', name=f'T_hidden1')(task_specific)
-                    task_specific = tf.keras.layers.Dropout(0.3, name=f'dropout_{output_name}')(task_specific)
+                    task_specific = tf.keras.layers.Dropout(0.3, name=f'dropout_{output_name}',seed=next(seed_gen))(task_specific)
                     output_layer = tf.keras.layers.Dense(output_width * output_dim,name=f'dense_{output_name}')(task_specific)
 
                 else:  # rh任务
@@ -354,7 +359,7 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
                                                          dropout=0.00,recurrent_dropout=0.00,
                                                          )(x)
                     # task_specific= tf.keras.layers.Dense(48, activation='relu', name=f'rh_hidden1')(task_specific) # 解决rh 欠拟合的专用层
-                    task_specific = tf.keras.layers.Dropout(0.05, name=f'dropout_{output_name}')(task_specific)
+                    task_specific = tf.keras.layers.Dropout(0.05, name=f'dropout_{output_name}',seed=next(seed_gen))(task_specific)
                     output_layer = tf.keras.layers.Dense(output_width * output_dim,name=f'dense_{output_name}')(task_specific)
 
                 # ** 确保T和rh分支都是从原始的共享特征x开始，而不是一个分支的输出作为另一个分支的输入

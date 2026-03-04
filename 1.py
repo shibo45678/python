@@ -1819,3 +1819,251 @@ for root, dirs, files in os.walk(checkpoint_path):
 #                 epsilon=getattr(old, 'epsilon', 1e-7)
 #             )
 #             logger.debug(f"创建新优化器，但复制了超参数")
+
+
+# import hashlib
+# import numpy as np
+#
+# def get_batch_signature(dataset, batch_index=0):
+#     """
+#     获取指定 batch 的数据签名，自动探测数据结构
+#     """
+#     for i, batch in enumerate(dataset):
+#         if i == batch_index:
+#
+#             # 尝试获取实际的数据张量
+#             def extract_tensor(data):
+#                 """递归提取第一个遇到的张量"""
+#                 if hasattr(data, 'numpy'):  # 是 Tensor
+#                     return data
+#                 elif isinstance(data, (tuple, list)) and len(data) > 0:
+#                     return extract_tensor(data[0])
+#                 elif isinstance(data, dict):
+#                     first_key = list(data.keys())[0]
+#                     return extract_tensor(data[first_key])
+#                 else:
+#                     return None
+#
+#             # 提取第一个张量
+#             tensor = extract_tensor(batch)
+#
+#             if tensor is not None:
+#                 x_bytes = tensor.numpy().tobytes()
+#                 hash_value = hashlib.md5(x_bytes).hexdigest()
+#
+#                 stats = {
+#                     'shape': list(tensor.shape),
+#                     'mean': float(np.mean(tensor.numpy())),
+#                     'std': float(np.std(tensor.numpy())),
+#                     'min': float(np.min(tensor.numpy())),
+#                     'max': float(np.max(tensor.numpy())),
+#                     'hash': hash_value,
+#                 }
+#                 return stats
+#             else:
+#                 print("无法找到张量数据")
+#                 return None
+#     return None
+#
+# # 使用
+# for batch_idx in range(5):
+#     signature1 = get_batch_signature(trainset, batch_idx)
+#     print(f"trainsetBatch {batch_idx} hash: {signature1['hash'][:8]}...")
+#     signature2 = get_batch_signature(valset, batch_idx)
+#     print(f"trainsetBatch {batch_idx} hash: {signature2['hash'][:8]}...")
+#
+# checkpoint_dir='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260304_094300/tf_checkpoints_stage0/epoch_22'
+#
+# os.listdir(checkpoint_dir)
+
+# def _compile_for_prediction_model(self, model):  # 同一Python进程中直接获取实例。独立的演化路径
+#     """为预测模型重新编译 多输出会折叠metrics会折叠"""
+#
+#     # 获取实际输出数量
+#     num_outputs = len(model.outputs)
+#     logger.debug(f"模型有 {num_outputs} 个输出")
+#
+#     # 获取输出层名称（使用模型输出层名称，不是张量名称）
+#     output_names = []
+#     for output in model.outputs:
+#         for layer in model.layers:
+#             if hasattr(layer, 'output') and layer.output is output:
+#                 output_names.append(layer.name)
+#                 break
+#     logger.debug(f"输出层名称：{output_names}")
+#
+#     # 构建字典配置
+#     # 使用统一的配置管理器
+#     loss_config = ModelConfigManager.get_loss_config(self.model_config)
+#     metrics_config = ModelConfigManager.get_metrics_config(self.model_config)
+#     loss_weights_config = ModelConfigManager.get_loss_weights_config(self.model_config)
+#
+#     logger.debug(f"loss_config: {loss_config}")
+#     logger.debug(f"metrics_config: {metrics_config}")
+#     logger.debug(f"loss_weights_config:{loss_weights_config}")
+#
+#     # 获取优化器
+#     if hasattr(self, 'training_model_') and hasattr(self.training_model_, 'optimizer'):
+#         optimizer = self.training_model_.optimizer  # 可以用实例，load可以用配置
+#     else:
+#         learning_rate = self.model_config.get('learning_rate', 0.001)
+#         optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+#
+#     # 单输出或者多输出都可以使用字典，但是要保证输出层名字正确
+#     logger.debug("=== 编译前检查 ===")
+#     logger.debug(f"输出层: {output_names}")
+#     logger.debug(f"loss_config: {loss_config}")
+#     logger.debug(f"metrics_config: {metrics_config}")
+#     logger.debug(f"loss_config类型: {type(loss_config)}")
+#     logger.debug(f"metrics_config类型: {type(metrics_config)}")
+#
+#     model.compile(
+#         optimizer=optimizer,
+#         loss=loss_config,  # 字典 键是输出层名
+#         loss_weights=loss_weights_config,
+#         metrics=metrics_config
+#     )
+#
+#     logger.debug("编译完成，验证metrics配置...")
+#
+#     if len(model.metrics) >= 2:
+#         compile_metrics = model.metrics[1]
+#         if hasattr(compile_metrics, '_user_metrics'):
+#             actual_metrics = compile_metrics._user_metrics
+#             logger.debug(f"实际编译的metrics配置: {actual_metrics}")
+#             logger.debug(f"期望的metrics配置: {metrics_config}")
+#
+#     return model
+
+import math
+import tensorflow as tf
+# def optimal_cosine_annealing_with_start( epoch,warmup_epochs,total_epochs,initial_lr,min_lr,warmup_power,start_epoch=23):
+#     """支持从中间epoch开始的余弦退火"""
+#
+#     # 调整epoch：减去开始epoch
+#     adjusted_epoch = epoch - start_epoch + 1
+#
+#     # 如果adjusted_epoch已经在warmup之后
+#     if adjusted_epoch >= warmup_epochs:
+#         # 直接进入余弦衰减阶段
+#         decay_epoch = adjusted_epoch - (warmup_epochs - 1)
+#         decay_total = total_epochs - warmup_epochs + 1
+#
+#         # 余弦衰减
+#         progress = decay_epoch / decay_total
+#         cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+#
+#         return min_lr + (initial_lr - min_lr) * cosine_decay
+#     else:
+#         # 还在warmup阶段（不太可能）
+#         progress = adjusted_epoch / warmup_epochs
+#         return min_lr + (initial_lr - min_lr) * (progress ** warmup_power)
+#
+# for epoch in range(23,25):
+#     # warmup_epochs =1 代表热身0轮（不用热身）第23轮就开始衰减
+#     res = optimal_cosine_annealing_with_start(epoch,start_epoch=23,warmup_epochs=1,total_epochs=20,initial_lr=0.00035,min_lr=1e-6,warmup_power=2)
+#     print(res)
+#
+# for epoch in range(23,50):
+#     # 需要热身 warmup_epochs =2，代表热身1轮（即epoch=23 热身，之后衰减）
+#     res2 = optimal_cosine_annealing_with_start(epoch,start_epoch=23,warmup_epochs=2,total_epochs=20,initial_lr=0.00035,min_lr=1e-6,warmup_power=2)
+#     print(res2)
+class CosineAnnealingWarmRestarts(tf.keras.callbacks.Callback):
+    def __init__(self, initial_lr=0.00035, min_lr=1e-6, total_epochs=30, warmup_epochs=5,
+                 warmup_power=2.0, restart_epochs: list = None):
+        super().__init__()
+        self.initial_lr = initial_lr
+        self.min_lr = min_lr
+        self.total_epochs = total_epochs
+        self.warmup_epochs = warmup_epochs
+        self.warmup_power = warmup_power
+        self.restart_epochs = restart_epochs or []
+        """
+        参数:
+        - initial_lr: 初始学习率 (0.00035)  -> 顶
+        - min_lr: 最小学习率 (1e-6) ->  脚
+        - total_epochs: 1周期的总epoch数
+        - warmup_epochs: warmup阶段epoch数（先小学习率"热身"，再大学习率训练）
+        - warmup_power: warmup曲线形状 (1=线性（直线）, 2=二次（曲线）)
+        - restart_epochs: 重启点列表，如[15, 25]表示在第15、25个epoch重启
+        """
+
+    def optimal_cosine_annealing(self, epoch):
+        """
+        - epoch: 当前epoch
+        """
+        # 处理重启逻辑
+        if self.restart_epochs and len(self.restart_epochs) > 0:
+            restart_epochs = sorted(self.restart_epochs)
+            current_cycle_start = 0
+            cycle_length = self.total_epochs
+
+            for i in range(len(restart_epochs)):
+                restart_epoch = restart_epochs[i]
+                if epoch >= restart_epoch:
+                    current_cycle_start = restart_epoch
+
+                    # 计算当前周期的长度
+                    if i + 1 < len(restart_epochs):
+                        next_restart = restart_epochs[i + 1]
+                        cycle_length = next_restart - restart_epoch
+                    else:
+                        cycle_length = self.total_epochs - restart_epoch
+                else:
+                    # 处理第一个周期（0到第一个重启点）的情况
+                    if i == 0:
+                        cycle_length = restart_epoch - 0
+                    break
+
+            epoch_in_cycle = epoch - current_cycle_start
+            effective_total = cycle_length
+        else:
+            epoch_in_cycle = epoch
+            effective_total = self.total_epochs
+
+        # 还在Warmup阶段
+        if epoch_in_cycle+1 < self.warmup_epochs:
+            warmup_progress = (epoch_in_cycle + 1) / self.warmup_epochs # 是当前周期内的相对位置 归一化到[0, 1]范围
+            warmup_factor = warmup_progress ** self.warmup_power
+            return self.min_lr + (self.initial_lr - self.min_lr) * warmup_factor  # 确保学习率始终大于最小
+
+        if effective_total <= self.warmup_epochs:
+            return self.min_lr
+
+        # 余弦退火阶段
+        adjusted_epoch = (epoch_in_cycle+1) - (self.warmup_epochs-1)
+        adjusted_total = effective_total - (self.warmup_epochs-1)
+
+        # 确保不除零
+        if adjusted_total <= 0:
+            return self.min_lr
+
+        progress = adjusted_epoch / adjusted_total
+
+        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+
+        return self.min_lr + (self.initial_lr - self.min_lr) * cosine_decay
+
+for epoch in range(20) :
+    cosine_callback = CosineAnnealingWarmRestarts(
+                initial_lr=0.00039,
+                min_lr=1e-5,
+                total_epochs=20,  # 1周期总轮数
+                warmup_epochs=1,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+                warmup_power=2.0,
+                restart_epochs=[10])
+    # 不需要热身，直接衰减
+    res=cosine_callback.optimal_cosine_annealing(epoch)
+    print(f'epoch:{epoch}:{res}')
+
+for epoch in range(21) :
+    cosine_callback = CosineAnnealingWarmRestarts(
+                initial_lr=0.00039,
+                min_lr=1e-5,
+                total_epochs=20,  # 1周期总轮数
+                warmup_epochs=2,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+                warmup_power=2.0,
+                restart_epochs=[10])
+    # 需要热身1轮后衰减
+    res2=cosine_callback.optimal_cosine_annealing(epoch)
+    print(f'epoch:{epoch}:{res2}')

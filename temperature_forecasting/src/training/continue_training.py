@@ -1,20 +1,26 @@
+from utils.tensorflow_config import ensure_tf_settings, TensorFlowConfig
+
+ensure_tf_settings()  # setdefault 不会覆盖已存在的值
+TensorFlowConfig.setup_environment()
+import tensorflow as tf
+
 import re
 import cloudpickle
 import pandas as pd
-import tensorflow as tf
 import os
 import logging
 from datetime import datetime
 
 from models import MultiTasksLstmModel, MultiTasksCnnModel, SingleTaskLstmModel
-from training.training_models import CustomCheckpointCallback, CosineAnnealingWarmRestarts, ForceLRCallback
+from training.training_models import CustomCheckpointCallback, CosineAnnealingWarmRestarts, ForceLRCallback, \
+    ContinueCosineAnnealing
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
 def continue_training(
-        pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260211_102251',
+        pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260304_092539',
         checkpoint_dir: str = 'tf_checkpoints_stage1',
         continue_inner_epoch=None,
         update_lr='custom',
@@ -31,6 +37,7 @@ def continue_training(
         monitor:监控指标
 
     """
+
     continue_dir = os.path.join(pre_path, 'continue_training')
     stage_dir = os.path.join(pre_path, checkpoint_dir)
     model_name = re.search(r'/([a-z]+_[a-z]+[\d]+.*?)_', pre_path).group(1)  # multi_lstm2*
@@ -49,7 +56,7 @@ def continue_training(
     train_save_path = os.path.join(continue_dir, f'{model_name}_preprocessed_data/train_dataset')
     val_save_path = os.path.join(continue_dir, f'{model_name}_preprocessed_data/val_dataset')
     trainset = tf.data.Dataset.load(train_save_path)
-    valset = tf.data.Dataset.load(val_save_path)
+    valset = tf.data.Dataset.load(val_save_path)  # Hash 相同 -> 排除数据问题，问题在模型/优化器/GPU 非确定性（没数据顺序Shuffle 或 Load 问题）
 
     # 2. 加载该阶段 模型架构+权重（keras直接加载架构和权重load_model，h5才是加载load_model不行尝试重建+load_weights)
     logger.info(f"加载模型: {stage_dir}")
@@ -76,7 +83,7 @@ def continue_training(
         if latest_checkpoint_file is not None:
             continue_inner_epoch = infer_continue_epoch(latest_checkpoint_file)
     logger.info(
-        f"从Epoch:{continue_inner_epoch + 1} 开始继续训练，inner_epoch:{continue_inner_epoch},下一次训练 Epoch={continue_inner_epoch + 2}")
+        f"从Epoch:{continue_inner_epoch + 1} 开始继续训练，inner_epoch:{continue_inner_epoch},下一次训练 Epoch:{continue_inner_epoch + 2}")
 
     # 4. 设置初始学习率
     target_lr = get_initial_learning_rate(continue_inner_epoch, stage_number=stage_number, dir=continue_dir,
@@ -86,8 +93,13 @@ def continue_training(
 
     # 5. 更新编译器
     try:
+        opt = model.optimizer
+        logger.debug(f"Optimizer Type: {type(opt).__name__}")
+        logger.debug(f"Iterations (Step Count): {opt.iterations.numpy()}")
+        logger.debug(f"Current Learning Rate: {opt.learning_rate.numpy()}")  # 前次最佳的学习率
+
         model.optimizer.learning_rate.assign(target_lr)
-        logger.debug(f"新一轮 Epoch {continue_inner_epoch + 2}: 强制设置LR = {target_lr:.2e}")
+        logger.debug(f"新一轮 Epoch {continue_inner_epoch + 2}: 强制设置LR = {target_lr:.2e} / {target_lr:.6f}")
 
     except Exception as e:
         logger.debug(f"无法修改学习率: {e}")
@@ -102,9 +114,9 @@ def continue_training(
         )
         logger.debug(f"创建新优化器，但复制了超参数")
 
-    # 6. 设置新训练的模型保存目录（不覆盖原始）
+    # 6. 设置新训练的模型保存目录
     if save_model_dir is None:
-        save_model_dir = os.path.join(pre_path, f'tf_checkpoints_stage{stage_number + 1}')
+        save_model_dir = os.path.join(pre_path, f'tf_checkpoints_stage{stage_number + 1}')  # 没有指定保存目录，就直接取下一阶段
         os.makedirs(save_model_dir, exist_ok=True)
 
     # 7. 设置回调函数
@@ -112,7 +124,11 @@ def continue_training(
         checkpoint_model_dir=save_model_dir,
         stage_number=stage_number + 1,
         initial_epoch=continue_inner_epoch + 1,  # 用户友好
-        metric=monitor)
+        metric=monitor,
+        target_lr=target_lr,
+        min_delta=1e-6,
+        early_patience=10,
+    )
 
     # 8. 继续训练
     logger.info(f"继续训练Epoch: {continue_inner_epoch + 2}/{total_epochs} 轮")
@@ -124,14 +140,12 @@ def continue_training(
         verbose=verbose,  # epoch每轮输出一行记录
         callbacks=callbacks)
 
-    # 9. 保存完整模型
-
-    # 10. 保存新阶段的训练历史
+    # 9. 保存新阶段的训练历史
     history_path, csv_path = combine_training_history(new_history, continue_inner_epoch, pre_stage=stage_number,
                                                       model_name=model_name,
                                                       save_dir=continue_dir)
 
-    return model, history_path, csv_path, save_model_dir,new_history
+    return model, history_path, csv_path, save_model_dir, new_history
 
 
 def find_latest_checkpoint(stage_dir, extension: str = '.keras'):
@@ -213,8 +227,9 @@ def get_initial_learning_rate(continue_inner_epoch, dir, model_name, stage_numbe
             return 1.2e-05
         else:
             return 8e-05
-    elif method=='custom':
-        logger.debug(f'训练初始学习率获得方式{method},使用默认值 1e-5')
+
+    elif method == 'custom':
+        logger.debug(f'训练初始学习率获得方式{method},使用默认值 0.00039')
         return 0.00039
 
     else:
@@ -238,7 +253,7 @@ def combine_training_history(new_history, continue_inner_epoch, pre_stage, model
         new_epochs = list(range(1, len(next(iter(new_history_dict.values())))))
 
     # 处理前次历史
-    pre_history_data = get_training_history(save_dir =save_dir,model_name=model_name,stage=pre_stage)
+    pre_history_data = get_training_history(save_dir=save_dir, model_name=model_name, stage=pre_stage)
 
     if not pre_history_data:
         logger.error(f"文件夹内找不到前次历史文件：{save_dir}")
@@ -308,7 +323,7 @@ def combine_training_history(new_history, continue_inner_epoch, pre_stage, model
     return history_path, csv_path
 
 
-def get_training_history(save_dir,model_name,stage):
+def get_training_history(save_dir, model_name, stage):
     save_path = os.path.join(save_dir, f'{model_name}_history_stage{stage}.cpkl')
 
     if os.path.exists(save_path):
@@ -317,43 +332,58 @@ def get_training_history(save_dir,model_name,stage):
         return history_data
 
 
-def get_continue_callbacks(checkpoint_model_dir, initial_epoch, metric, stage_number):
+def get_continue_callbacks(checkpoint_model_dir, initial_epoch, metric, stage_number, target_lr,min_delta,early_patience):
     callbacks = []
 
     # 1. ModelCheckpoint - 保存最佳模型
     checkpoint_callback = CustomCheckpointCallback(checkpoint_dir=checkpoint_model_dir,
                                                    stage_number=stage_number,
                                                    initial_epoch=initial_epoch,
-                                                   metric=metric),
+                                                   metric=metric, min_delta=min_delta, patience=early_patience)
 
     callbacks.append(checkpoint_callback)
 
-    # 2.学习率-余弦退火
-    cosine_callback = CosineAnnealingWarmRestarts(
-        initial_lr=0.00039,
-        min_lr=1e-5,
-        total_epochs=20,  # 1周期总轮数
-        warmup_epochs=3,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
-        warmup_power=2.0,
-        restart_epochs=None)
+    #  2.学习率-余弦退火-首次
+    if stage_number < 0:
+        cosine_callback = CosineAnnealingWarmRestarts(
+            initial_lr=target_lr,
+            min_lr=1e-5,
+            total_epochs=20,  # 1周期总轮数
+            warmup_epochs=3,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+            warmup_power=2.0,
+            restart_epochs=None)
 
-    cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
-        cosine_callback.optimal_cosine_annealing,
-        verbose=1)
-    callbacks.append(cosine_lr_optimal)
+        cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
+            cosine_callback.optimal_cosine_annealing,
+            verbose=1)
+        callbacks.append(cosine_lr_optimal)
+    else:
+        # 2. 学习率余弦退火-继续训练
+        cosine_callback = ContinueCosineAnnealing(
+            initial_lr=target_lr,
+            min_lr=1e-5,
+            total_epochs=20,
+            warmup_epochs=1, # 1代表0轮热身(不热身）
+            warmup_power=2.0,
+            start_epoch=initial_epoch)
+        cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
+            cosine_callback.optimal_cosine_annealing_with_start,
+            verbose=1)
+        callbacks.append(cosine_lr_optimal)
 
     # 3.学习率-固定值(不和余弦退火重复）
     # force_callback = ForceLRCallback(start_epoch=initial_epoch if initial_epoch != 0 else 1, )
     # callbacks.append(force_callback)
 
     # 4.TensorBoard日志（可选）
-    log_dir = os.path.join(checkpoint_model_dir, "board_logs",datetime.now().strftime("%Y%m%d-%H%M%S"))
+    log_dir = os.path.join(checkpoint_model_dir, "board_logs", datetime.now().strftime("%Y%m%d-%H%M%S"))
     tensorboard_callback = tf.keras.callbacks.TensorBoard(
         log_dir=log_dir,
         histogram_freq=1,
         update_freq='epoch'
     )
     callbacks.append(tensorboard_callback)
+
 
     return callbacks
 
@@ -362,18 +392,20 @@ if __name__ == '__main__':
     import argparse  # 使用 argparse（用于bash调用）参数灵活不用改代码
 
     parser = argparse.ArgumentParser(description='继续训练模型')
-    parser.add_argument('--pre_path',type=str,required=False,help='前次训练保存的model时间戳地址')
-    parser.add_argument('--checkpoint_dir',type=str,default='tf_checkpoints_stage0',help='到stage的位置')
-    parser.add_argument('--continue_inner_epoch',type=int,default=None,help='可以手动输入内部epoch，也可以None自动查找最后的文件')
-    parser.add_argument('--save_model_dir',type=str,default=None,help='继续训练新模型的存储位置，带stage，不填None可以自动在checkpoint_dir处下推一个位置')
-    parser.add_argument('--update_lr',type=str,default='from_history',help='默认从前次历史找最佳点的学习率')
-    parser.add_argument('--monitor',type=str,default='val_loss',help='监控指标，默认是总损失')
-    parser.add_argument('--verbose',type=int,default=2,help='2代表训练一次显示一行')
+    parser.add_argument('--pre_path', type=str, required=False, help='前次训练保存的model时间戳地址')
+    parser.add_argument('--checkpoint_dir', type=str, default='tf_checkpoints_stage0', help='到stage的位置')
+    parser.add_argument('--continue_inner_epoch', type=int, default=None,
+                        help='可以手动输入内部epoch，也可以None自动查找最后的文件')
+    parser.add_argument('--save_model_dir', type=str, default=None,
+                        help='继续训练新模型的存储位置，带stage，不填None可以自动在checkpoint_dir处下推一个位置')
+    parser.add_argument('--update_lr', type=str, default='from_history', help='默认从前次历史找最佳点的学习率')
+    parser.add_argument('--monitor', type=str, default='val_loss', help='监控指标，默认是总损失')
+    parser.add_argument('--verbose', type=int, default=2, help='2代表训练一次显示一行')
 
     args = parser.parse_args()
 
-    model,_,_, save_model_dir,new_history = continue_training(
-        pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260213_114151',
+    model, _, _, save_model_dir, new_history = continue_training(
+        pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_004235',
         checkpoint_dir='tf_checkpoints_stage0',
         continue_inner_epoch=None,
         save_model_dir=None,  # 带stage

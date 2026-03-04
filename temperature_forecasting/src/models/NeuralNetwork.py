@@ -23,8 +23,6 @@ from data.windows import EnhancedWindowGenerator
 from evaluation.model_evaluation import ModelEvaluation
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 
-
-
 import tensorflow as tf
 random.seed(42)
 np.random.seed(42)
@@ -67,7 +65,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.forecast_window_gen_ = None
         self.train_window_gen_ = None
         self.forecast_window_config_ = None
-        self.stage_number_=0
+        self.stage_number_=-1
 
     def fit(self, X: dict, y=None):
         # 写出数据源
@@ -105,12 +103,14 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
             self._save_preprocessed_data(continue_training_dir=continue_training_dir, trainset=train_window_data,
                                          valset=val_window_data)
+            self.stage_number_ = -1
+
         # ====继续训练用====
         else:
             basic_dir = None
             match = re.search(r"(.*)tf_checkpoints_stage(\d+)", str(continue_train))
             continue_training_dir = os.path.join(match.group(1),'continue_training')
-            self.stage_number_ = int(match.group(2))+1
+            self.stage_number_ = int(match.group(2))
 
         # ================
 
@@ -142,8 +142,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                                                                 total_epochs=self.model_config['total_epochs'],
                                                                 verbose=self.model_config['verbose'],
                                                                 monitor=self.model_config['monitor'],
-                                                                early_stop_patience=self.model_config[
-                                                                    'early_stop_patience'],
                                                                 min_delta=self.model_config[
                                                                     'min_delta'],
                                                                 continue_from_experiment=self.model_config[
@@ -175,7 +173,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         #  ====继续训练用====  存预处理数据 + 训练历史
         self._save_model_config(continue_training_dir=continue_training_dir, config=model_config,
-                                stage_number=self.stage_number_)  # None
+                                stage_number=self.stage_number_)
 
         self._save_training_history(history=self.history_, continue_training_dir=continue_training_dir,
                                     stage_number=self.stage_number_)
@@ -185,10 +183,10 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.best_checkpoint = best_checkpoint  # epoch/
 
         # 训练完成后，创建用于预测的模型
-        self._prediction_model = self.load_best_model(self.stage_number_)
+        self.prediction_model_ = self.load_best_model()
 
         # 1.5 评估模型
-        self.evaluate_model(dataset=val_window_data, dataset_type='val',stage_number=self.stage_number_)
+        self.evaluate_model(dataset=val_window_data, dataset_type='val')
 
         self.is_fitted_ = True
 
@@ -206,10 +204,10 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         # 2. 重构模型
         if self.prediction_model_ is None:
-            self._prediction_model = self.load_best_model(self.stage_number_)  # 确保使用最佳权重
+            self.prediction_model_ = self.load_best_model()  # 确保使用最佳权重
 
         # 3. 模型预测
-        predictions = self._prediction_model.predict(predict_window_data)  # 多输入和输出（tuple,dict）->预测结果是list
+        predictions = self.prediction_model_.predict(predict_window_data)  # 多输入和输出（tuple,dict）->预测结果是list
 
         return predictions
 
@@ -226,14 +224,14 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
     def _save_model_config(self, continue_training_dir, config, stage_number):
         model_name = config.get('model_type')
-        saved_config_path = os.path.join(continue_training_dir, f'{model_name}_config_stage{stage_number}.cpkl')
+        saved_config_path = os.path.join(continue_training_dir, f'{model_name}_config_stage{stage_number+1}.cpkl')
         with open(saved_config_path, 'wb') as f:
             cloudpickle.dump(config, f)
 
     def _save_training_history(self, history, continue_training_dir, stage_number):
         model_name = self.model_config.get('model_type', 'unknown')
-        history_path = os.path.join(continue_training_dir, f'{model_name}_history_stage{stage_number}.cpkl')
-        csv_path = os.path.join(continue_training_dir, f'{model_name}_history_stage{stage_number}.csv')
+        history_path = os.path.join(continue_training_dir, f'{model_name}_history_stage{stage_number+1}.cpkl')
+        csv_path = os.path.join(continue_training_dir, f'{model_name}_history_stage{stage_number+1}.csv')
         # history 是一个 Keras History 对象 不可以直接dump
         # history.history：字典 / history.params：字典（可序列化） / history.epoch：列表（可序列化） 其他不可序列化
 
@@ -251,7 +249,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             'history': history_dict,
             'epochs': [int(e) for e in epochs],
             'params': params,
-            'stage': stage_number,
+            'stage': stage_number+1,
             'save_time': datetime.datetime.now().isoformat()
         }
         with open(history_path, 'wb') as f:
@@ -263,38 +261,40 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         logger.info(f"训练历史保存到: {csv_path}")
         return history_path,csv_path
 
-    def load_best_model(self,stage_number):
+    def load_best_model(self):
         """用于预测的干净模型"""
 
         if not hasattr(self, 'best_checkpoint'):
             raise ValueError('未找到最佳模型检查点')
 
         checkpoint_dir = self.best_checkpoint
-        keras_file = os.path.join(checkpoint_dir, f'model_stage{stage_number}.keras')  # 现在保存的是.keras格式，需要找到具体的.keras文件
+        file_list = os.listdir(checkpoint_dir)
+        keras_files =[]
 
-        if not os.path.exists(keras_file):
-            raise FileNotFoundError(
-                f"找不到.keras模型文件: {keras_file}\n"
-                f"目录内容: {os.listdir(checkpoint_dir)}"
-            )
-        model = tf.keras.models.load_model(keras_file)  # 可以直接 predict() evaluate() 甚至可以继续训练（如果有优化器状态）
+        for file in file_list:
+            if file.endswith('.keras'):
+                keras_file = os.path.join(checkpoint_dir,file)
+                keras_files.append(keras_file)
 
-        logger.debug("\n加载的模型:")
-        logger.debug(f"  优化器: {model.optimizer}")
-        logger.debug(f"  Loss: {model.loss}")
-        logger.debug(f"  Metrics: {model.metrics}")  # 多任务的metrics 也可以打开 <CompileMetrics name=compile_metrics>]
-
-        # 重新编译 展开多任务metrics 评估<CompileMetrics name=compile_metrics>]
-        # self._compile_for_prediction_model(model)
-
-        return model
-
-    def evaluate_model(self, dataset, dataset_type='val',stage_number=0):
-        """用任意数据评估已训练好的模型"""
-        if not self._prediction_model:
-            model = self.load_best_model(stage_number)
+        if keras_files:
+            keras_files.sort(key=os.path.getmtime, reverse=True)
+            model = tf.keras.models.load_model(keras_files[0])
+            # logger.debug("\n加载的模型:"
+            # logger.debug(f"  优化器: {model.optimizer}")
+            # logger.debug(f"  Loss: {model.loss}")
+            # logger.debug(f"  Metrics: {model.metrics}")  # 多任务的metrics 也可以打开 <CompileMetrics name=compile_metrics>]
+            return model
         else:
-            model = self._prediction_model
+            raise FileNotFoundError(
+                f"找不到.keras模型文件: {keras_files}\n"
+            )
+
+    def evaluate_model(self, dataset, dataset_type='val'):
+        """用任意数据评估已训练好的模型"""
+        if not self.prediction_model_:
+            model = self.load_best_model()
+        else:
+            model = self.prediction_model_
 
         metrics = ModelEvaluation(self.model_config['output_config'], model_name=self.model_config['model_type'])
         details = metrics.comprehensive_model_evaluation(model=model,  # 评估 best_model
@@ -305,8 +305,8 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
     def clear_prediction_cache(self):
         """清空预测缓存"""
-        if hasattr(self, '_prediction_model'):
-            del self._prediction_model
+        if hasattr(self, 'prediction_model_'):
+            del self.prediction_model_
 
     def _train_window_generator(self, output_config):
 
@@ -346,64 +346,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         return self.predict_window_gen, self.forecast_window_config_
 
-    def _compile_for_prediction_model(self, model):  # 同一Python进程中直接获取实例。独立的演化路径
-        """为预测模型重新编译 多输出会折叠metrics会折叠"""
 
-        # 获取实际输出数量
-        num_outputs = len(model.outputs)
-        logger.debug(f"模型有 {num_outputs} 个输出")
-
-        # 获取输出层名称（使用模型输出层名称，不是张量名称）
-        output_names = []
-        for output in model.outputs:
-            for layer in model.layers:
-                if hasattr(layer, 'output') and layer.output is output:
-                    output_names.append(layer.name)
-                    break
-        logger.debug(f"输出层名称：{output_names}")
-
-        # 构建字典配置
-        # 使用统一的配置管理器
-        loss_config = ModelConfigManager.get_loss_config(self.model_config)
-        metrics_config = ModelConfigManager.get_metrics_config(self.model_config)
-        loss_weights_config = ModelConfigManager.get_loss_weights_config(self.model_config)
-
-        logger.debug(f"loss_config: {loss_config}")
-        logger.debug(f"metrics_config: {metrics_config}")
-        logger.debug(f"loss_weights_config:{loss_weights_config}")
-
-        # 获取优化器
-        if hasattr(self, 'training_model_') and hasattr(self.training_model_, 'optimizer'):
-            optimizer = self.training_model_.optimizer  # 可以用实例，load可以用配置
-        else:
-            learning_rate = self.model_config.get('learning_rate', 0.001)
-            optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-
-        # 单输出或者多输出都可以使用字典，但是要保证输出层名字正确
-        logger.debug("=== 编译前检查 ===")
-        logger.debug(f"输出层: {output_names}")
-        logger.debug(f"loss_config: {loss_config}")
-        logger.debug(f"metrics_config: {metrics_config}")
-        logger.debug(f"loss_config类型: {type(loss_config)}")
-        logger.debug(f"metrics_config类型: {type(metrics_config)}")
-
-        model.compile(
-            optimizer=optimizer,
-            loss=loss_config,  # 字典 键是输出层名
-            loss_weights=loss_weights_config,
-            metrics=metrics_config
-        )
-
-        logger.debug("编译完成，验证metrics配置...")
-
-        if len(model.metrics) >= 2:
-            compile_metrics = model.metrics[1]
-            if hasattr(compile_metrics, '_user_metrics'):
-                actual_metrics = compile_metrics._user_metrics
-                logger.debug(f"实际编译的metrics配置: {actual_metrics}")
-                logger.debug(f"期望的metrics配置: {metrics_config}")
-
-        return model
 
     def _get_compile_config_for_save(self):
 
@@ -432,24 +375,24 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             'output_names': list(self.model_config.get('output_config', {}).keys())  # 额外保存输出层名称，方便对齐
         }
 
-    def __getstate__(self):
-        """序列化时只保留必要信息"""
-        state = self.__dict__.copy()
-
-        # 移除所有模型实例（通过save/load机制重建）
-        state['training_model_'] = None
-        state['prediction_model_'] = None
-        state['window'] = None
-
-        return state
-
-    def __setstate__(self, state):
-        """反序列化"""
-        self.__dict__.update(state)
-
-        if hasattr(self, 'weights_path') and os.path.exists(self.weights_path):
-            self.prediction_model_ = self.load_best_model()
-            self.train_window_gen_ = self._train_window_generator(self.model_config['output_config'])
+    # def __getstate__(self):
+    #     """序列化时只保留必要信息"""
+    #     state = self.__dict__.copy()
+    #
+    #     # 移除所有模型实例（通过save/load机制重建）
+    #     state['training_model_'] = None
+    #     state['prediction_model_'] = None
+    #     state['window'] = None
+    #
+    #     return state
+    #
+    # def __setstate__(self, state):
+    #     """反序列化"""
+    #     self.__dict__.update(state)
+    #
+    #     if hasattr(self, 'weights_path') and os.path.exists(self.weights_path):
+    #         self.prediction_model_ = self.load_best_model()
+    #         self.train_window_gen_ = self._train_window_generator(self.model_config['output_config'])
 
 
 class TimeSeriesPostProcessor:

@@ -1,6 +1,10 @@
+import hashlib
 import logging
 import math
+import random
 
+import cloudpickle
+import numpy as np
 from keras.src.callbacks import LearningRateScheduler
 
 logger = logging.getLogger(__name__)
@@ -62,23 +66,24 @@ class SimpleTrainingManager:
             logger.debug(
                 f"加载检查点 Epoch{latest_epoch + 1},已完成的第{latest_epoch + 1}次训练，内部epoch编码{latest_epoch} ")
             keras_file = os.path.join(latest_checkpoint, f'model_stage{self.stage}.keras')
-            loaded_model = tf.keras.models.load_model(keras_file)
-            model.set_weights(loaded_model.get_weights())  # 确保始终是同一个对象的引用
+            loaded_model = tf.keras.models.load_model(keras_file)  # 有权重也有优化器状态
+            return latest_epoch, loaded_model
 
-        return latest_epoch
+        return 0, model
 
 
 class CustomCheckpointCallback(tf.keras.callbacks.Callback):
     def __init__(self, checkpoint_dir, stage_number,
                  initial_epoch, metric='val_T_loss',
-                 min_delta=1e-6):
+                 min_delta=1e-6, patience=10):
         """
             Args:
-                checkpoint_dir: 检查点保存目录 # 带tf_checkpoints_stage1
+                checkpoint_dir: 检查点新保存目录 # 带tf_checkpoints_stage1
                 stage_number: 阶段编号
                 initial_epoch: 初始epoch（用户友好）
                 metric: 监控的指标
                 min_delta: 视为改进的最小变化量
+                patience: 早停的耐心值
         """
         super().__init__()
         self.checkpoint_dir = checkpoint_dir
@@ -86,12 +91,77 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
         self.initial_epoch = initial_epoch  # 用户友好
         self.metric = metric
         self.min_delta = min_delta
+        self._ensure_generator()
 
         self.best_val_loss = float('inf')
         self.best_model_path = None
         self.best_epoch = -1
+        self.patience_counter = 0  # 耐心计数器
+        self.wait = 0  # 等待计数
+        self.stopped_epoch = 0  # 停止的epoch
+        self.patience = patience
 
         os.makedirs(checkpoint_dir, exist_ok=True)
+
+    def _ensure_generator(self):
+        try:
+            tf.random.get_global_generator()
+        except (RuntimeError, ValueError):
+            tf.random.set_global_generator(tf.random.Generator.from_seed(42))
+
+    def on_train_begin(self, logs=None):
+        self._ensure_generator()
+
+        if self.initial_epoch is not None and self.initial_epoch >= 0:  # 恢复前次stage的RNG
+            match = re.search(r'(.+)tf_checkpoints_stage(\d+)', self.checkpoint_dir)
+            pre_path = match.group(1)
+            pre_stage = self.stage_number - 1
+            rng_file = os.path.join(pre_path, f'tf_checkpoints_stage{pre_stage}',
+                                    f'epoch_{self.initial_epoch - 1}', f'rng_stage{pre_stage}.cpkl')
+
+            if os.path.exists(rng_file):
+                with open(rng_file, 'rb') as f:
+                    rng_state = cloudpickle.load(f)
+
+                # 完全恢复状态，不仅仅是种子
+                random.setstate(rng_state['python_random'])
+                np.random.set_state(rng_state['numpy_random'])
+
+                if rng_state['tf_random'] is not None:
+                    new_gen = tf.random.Generator.from_state(rng_state['tf_random'], 'philox')
+                    tf.random.set_global_generator(new_gen)
+                logger.debug(f"恢复RNG状态，上次训练到epoch{rng_state['epoch']}")
+            else:
+                logger.debug(f"无RNG状态文件：{rng_file}")
+
+            # 恢复早停状态
+            training_state_file = os.path.join(pre_path, f'tf_checkpoints_stage{pre_stage}',
+                                               f'epoch_{self.initial_epoch - 1}',
+                                               f'training_state_stage{pre_stage}.cpkl')
+
+            if os.path.exists(training_state_file):
+                with open(training_state_file, 'rb') as f:
+                    training_state = cloudpickle.load(f)
+                self.best_val_loss = training_state['best_val_loss']
+                self.best_epoch = training_state['best_epoch']
+                self.patience_counter = training_state['patience_counter']
+                self.wait = training_state['wait']
+                logger.debug(f"恢复早停状态：best_loss={self.best_val_loss:.6f},"
+                             f"best_epoch={self.best_epoch},patience_counter={self.patience_counter}")
+
+            # # 恢复学习率调度器状态（意外中断才用）
+            # lr_state_file = os.path.join(pre_path,f'tf_checkpoint_stage{pre_stage}',
+            #                              f'epoch_{self.initial_epoch -1}',
+            #                              f'lr_schedule_stage{pre_stage}.cpkl')
+            # if os.path.exists(lr_state_file):
+            #     with open(lr_state_file,'rb') as f:
+            #         lr_state = cloudpickle.load(f)
+            #
+            #         # 确保优化器的迭代次数正确
+            #         if hasattr(self.model.optimizer,'iterations'):
+            #             self.model.optimizer.iterations.assign(lr_state['optimizer_iterations'])
+            #         logger.debug(f"恢复学习率状态：lr={lr_state['current_learning_rate']:.8f},"
+            #                      f"iterations={lr_state['optimizer_iterations']}")
 
     def on_epoch_end(self, epoch, logs=None):  # 内部友好
         """
@@ -111,7 +181,21 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
         if current_value < self.best_val_loss - self.min_delta:
             self.best_val_loss = current_value
             self.best_epoch = epoch
+            self.patience_counter = 0
+            self.wait = 0
             self._save_checkpoint(epoch)
+            logger.debug(f"改进！保存最佳模型，{self.metric}:{current_value:.6f}")
+        else:
+            self.patience_counter += 1
+            self.wait += 1
+            logger.debug(f"无改进，patience_counter:{self.patience_counter}/{self.patience}")
+
+            # 检查是否应该早停
+            if self.patience_counter >= self.patience:
+                self.stopped_epoch = epoch
+                self.model.stop_training = True
+                logger.info(
+                    f"早停于 epoch {epoch}，最佳 {self.metric}: {self.best_val_loss:.6f} 于 epoch {self.best_epoch}")
 
     def _save_checkpoint(self, epoch):
         current_epoch_dir = f'epoch_{epoch}/'  # 转成内部-内部
@@ -143,12 +227,53 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             weight_path = os.path.join(checkpoint_epoch_dir, f'model_stage{self.stage_number}.weights.h5')
             self.model.save_weights(weight_path)
 
-            # 4. 保存训练状态
-            state_path = os.path.join(checkpoint_epoch_dir, f'training_state_stage{self.stage_number}.pkl')
+            # 4. 保存完整RNG状态
+            tf_gen = tf.random.get_global_generator()
+            rng_state = {
+                'python_random': random.getstate(),
+                'numpy_random': np.random.get_state(),
+                'tf_random': tf_gen.state.numpy(),
+                'epoch': epoch
+            }
+            rng_file = os.path.join(checkpoint_epoch_dir, f'rng_stage{self.stage_number}.cpkl')
+            with open(rng_file, 'wb') as f:
+                cloudpickle.dump(rng_state, f)
 
-        self.best_model_path = checkpoint_epoch_dir  # 直接赋值给外层变量
+            # 5. 保存训练状态
+            training_state = {
+                'best_val_loss': self.best_val_loss,
+                'best_epoch': self.best_epoch,
+                'patience_counter': self.patience_counter,
+                'wait': self.wait,
+                'stopped_epoch': self.stopped_epoch,
+                'stage_number': self.stage_number,
+                'metric': self.metric,
+                'min_delta': self.min_delta
+            }
+            state_path = os.path.join(checkpoint_epoch_dir, f'training_state_stage{self.stage_number}.cpkl')
+            with open(state_path, 'wb') as f:
+                cloudpickle.dump(training_state, f)
+
+            # # 6. 保存学习率调度器状态（意外中断）
+            # if  hasattr(self.model.optimizer,'learning_rate'):
+            #     lr_schedule_state ={
+            #         'current_learning_rate':float(self.model.optimizer.learning_rate.numpy()),
+            #         'optimizer_iterations':int(self.model.optimizer.iterations.numpy())
+            #     }
+            #     lr_state_path = os.path.join(checkpoint_epoch_dir,
+            #                                  f"lr_schedule_stage{self.stage_number}.cpkl")
+            #     with open(lr_state_path,'wb') as f:
+            #         cloudpickle.dump(lr_schedule_state,f)
+
+        self.best_model_path = checkpoint_epoch_dir
         logger.debug(
             f"\ninner_epoch {epoch}: 保存最佳模型到 {checkpoint_epoch_dir}, 监控指标：{self.metric}：{self.best_val_loss:.4f}")
+
+    def on_train_end(self, logs=None):
+        """训练结束时打印早停信息"""
+        if self.stopped_epoch > 0:
+            logger.info(f"早停于 epoch {self.stopped_epoch}")
+            logger.info(f"最佳 {self.metric}: {self.best_val_loss:.6f} 于 epoch {self.best_epoch}")
 
     @staticmethod
     @contextlib.contextmanager
@@ -170,7 +295,9 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
         return {
             'best_epoch': self.best_epoch,
             'best_value': self.best_val_loss,
-            'best_model_path': self.best_model_path
+            'best_model_epoch_path': self.best_model_path,
+            'patience_counter': self.patience_counter,
+            'stopped_epoch': self.stopped_epoch
         }
 
 
@@ -227,10 +354,8 @@ class CosineAnnealingWarmRestarts(tf.keras.callbacks.Callback):
             epoch_in_cycle = epoch
             effective_total = self.total_epochs
 
-        # Warmup阶段
-        if epoch_in_cycle < self.warmup_epochs:
-            # 非线性warmup: (epoch/warmup_epochs)^warmup_power
-            # 语义：Epoch 1、2 < full LR，Epoch 3 = full LR → 设 warmup_epochs=3
+        # 还在Warmup阶段
+        if epoch_in_cycle + 1 < self.warmup_epochs:
             warmup_progress = (epoch_in_cycle + 1) / self.warmup_epochs  # 是当前周期内的相对位置 归一化到[0, 1]范围
             warmup_factor = warmup_progress ** self.warmup_power
             return self.min_lr + (self.initial_lr - self.min_lr) * warmup_factor  # 确保学习率始终大于最小
@@ -239,25 +364,64 @@ class CosineAnnealingWarmRestarts(tf.keras.callbacks.Callback):
             return self.min_lr
 
         # 余弦退火阶段
-        adjusted_epoch = epoch_in_cycle - self.warmup_epochs
-        adjusted_total = effective_total - self.warmup_epochs
+        adjusted_epoch = (epoch_in_cycle + 1) - (self.warmup_epochs - 1)
+        adjusted_total = effective_total - (self.warmup_epochs - 1)
 
         # 确保不除零
         if adjusted_total <= 0:
             return self.min_lr
+
         progress = adjusted_epoch / adjusted_total
 
         cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
 
-        # 可选：添加一点噪声防止卡在局部最优
-        # noise_factor = 1.0 + 0.01 * np.random.randn()  # 1%的随机噪声
-        # return min_lr + (initial_lr - min_lr) * cosine_decay * noise_factor
-
         return self.min_lr + (self.initial_lr - self.min_lr) * cosine_decay
 
 
+class ContinueCosineAnnealing:
+    """继续训练 更新余弦退火支持继续训练"""
+
+    def __init__(self, initial_lr=0.00035, min_lr=1e-6, total_epochs=25, warmup_epochs=1,
+                 warmup_power=2.0, start_epoch=23):
+        super().__init__()
+        self.initial_lr = initial_lr
+        self.min_lr = min_lr
+        self.total_epochs = total_epochs
+        self.warmup_epochs = warmup_epochs
+        self.warmup_power = warmup_power
+        self.start_epoch = start_epoch  # 用户友好
+
+    def optimal_cosine_annealing_with_start(self, epoch):
+        """支持从中间epoch开始的余弦退火"""
+        """
+        参数说明:
+            - epoch: 当前全局 epoch
+            - start_epoch: 继续训练的起始 Epoch (实际是用户友好)
+            - warmup_epochs: 真实的热身轮数 (1 代表无热身，2 代表热身 1 轮)，与首次余弦退火对应
+            """
+
+        # 调整epoch：减去开始epoch
+        adjusted_epoch = epoch - self.start_epoch + 1
+
+        # 如果adjusted_epoch已经在warmup之后
+        if adjusted_epoch >= self.warmup_epochs:
+            # 直接进入余弦衰减阶段
+            decay_epoch = adjusted_epoch - (self.warmup_epochs - 1)
+            decay_total = self.total_epochs - self.warmup_epochs + 1
+
+            # 余弦衰减
+            progress = decay_epoch / decay_total
+            cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+
+            return self.min_lr + (self.initial_lr - self.min_lr) * cosine_decay
+        else:
+            # 还在warmup阶段
+            progress = adjusted_epoch / self.warmup_epochs
+            return self.min_lr + (self.initial_lr - self.min_lr) * (progress ** self.warmup_power)
+
+
 class ForceLRCallback(tf.keras.callbacks.Callback):
-    def __init__(self, start_epoch=33): # 用户友好
+    def __init__(self, start_epoch=33):  # 用户友好
         super().__init__()
         self.start_epoch = start_epoch
 
@@ -469,7 +633,6 @@ def TrainingMultiModel(model_name: str,
                        basic_dir,
                        total_epochs: int = 20,
                        verbose: int = 2,
-                       early_stop_patience=5,
                        min_delta=1e-6,
                        reduce_lr_patience=2,
                        monitor='val_T_loss',
@@ -487,6 +650,22 @@ def TrainingMultiModel(model_name: str,
         tf_checkpoint_stage_dir = os.path.join(basic_dir, 'tf_checkpoints_stage0')
         os.makedirs(tf_checkpoint_stage_dir, exist_ok=True)
         logger.info(f"首次训练模型，最佳模型将加载到:{tf_checkpoint_stage_dir}")
+
+        """1.0 学习率优化-余弦退火"""
+        # 首次训练用
+        cosine_callback = CosineAnnealingWarmRestarts(
+            initial_lr=0.00039,
+            min_lr=1e-5,
+            total_epochs=20,  # 1周期总轮数
+            warmup_epochs=3,  # 3代表2轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+            warmup_power=2.0,
+            restart_epochs=None)
+
+        cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
+            cosine_callback.optimal_cosine_annealing,
+            verbose=1)
+
+
     # ============继续训练逻辑===============
     else:
         match = re.search(r"(.*)tf_checkpoints_stage(\d+)", str(continue_from_experiment))
@@ -495,140 +674,60 @@ def TrainingMultiModel(model_name: str,
         os.makedirs(tf_checkpoint_stage_dir, exist_ok=True)
 
         manager = SimpleTrainingManager(experiment_dir=continue_from_experiment, stage=stage_number - 1)
-        inner_epoch = manager.load_latest_checkpoint(model)
+        inner_epoch, model = manager.load_latest_checkpoint(model)
+
         logger.debug(
             f"加载检查点 Epoch={inner_epoch + 1} 模型，已训练 {inner_epoch + 1}/{total_epochs} 轮。下一次训练 Epoch={inner_epoch + 2}")
 
+
+        cosine_callback = ContinueCosineAnnealing(
+            initial_lr=0.00039, # main.py 手动调整
+            min_lr=1e-5,
+            total_epochs=20,
+            warmup_epochs=1,
+            warmup_power=2.0,
+            start_epoch=inner_epoch + 1)
+        cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
+            cosine_callback.optimal_cosine_annealing_with_start,
+            verbose=1)
     # ===========================================
 
-    # 创建TensorBoard日志目录   训练后，bash 查看 tensorboard --logdir=~/Python/NeuralNetwork/weights/logs
-    log_dir = os.path.join(tf_checkpoint_stage_dir, "board_logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
 
-    # """检查点"""
-    # # 存储最佳模型信息
-    # best_val_loss = float('inf')  # 初始化为正无穷大，每轮寻找最小值
-    # best_model_path = None
-    #
-    # class CustomCheckpointCallback(tf.keras.callbacks.Callback):
-    #     def __init__(self, checkpoint_dir, stage_number, initial_epoch,metric='val_T_loss'):  # tf_checkpoints_stage1
-    #         super().__init__()
-    #         self.checkpoint_dir = checkpoint_dir
-    #         self.stage_number = stage_number
-    #         self.initial_epoch = initial_epoch # 用户友好
-    #         self.metric = metric
-    #
-    #     def on_epoch_end(self, epoch, logs=None): # 内部友好(会
-    #         nonlocal best_val_loss, best_model_path  # 不是局部变量，而是来自外层函数，但非全局作用域
-    #
-    #         # 每个epoch结束时检查验证损失
-    #         val_T_loss = logs.get(self.metric, None)  # metrics dict_keys(['loss', 'mae', 'val_loss', 'val_mae'])
-    #
-    #         if val_T_loss is not None and val_T_loss < best_val_loss-1e-6:
-    #             best_val_loss = val_T_loss
-    #
-    #             # 删除旧的检查点目录
-    #             import shutil
-    #             current_epoch_dir = f'epoch_{epoch}/' # 转成内部-内部
-    #             for item in os.listdir(self.checkpoint_dir):
-    #                 item_path = os.path.join(self.checkpoint_dir, item)
-    #                 if (os.path.isdir(item_path) and item.startswith('epoch_')
-    #                         and item != current_epoch_dir):  # 排除当前目录
-    #                     shutil.rmtree(item_path)
-    #
-    #             checkpoint_epoch_dir = os.path.join(self.checkpoint_dir, current_epoch_dir)  # 用目录格式并确保路径以斜杠结尾
-    #             os.makedirs(checkpoint_epoch_dir, exist_ok=True)  # 必须创建目录 epoch_23
-    #
-    #             @contextlib.contextmanager
-    #             def suppress_output():
-    #                 old_stdout = sys.stdout  # 备份原来的"屏幕输出通道"
-    #                 old_stderr = sys.stderr  # 备份原来的"错误输出通道"
-    #
-    #                 sys.stdout = io.StringIO()  # 把输出重定向到一个"垃圾桶"（内存中的虚拟文件）
-    #                 sys.stderr = io.StringIO()
-    #
-    #                 try:
-    #                     yield
-    #
-    #                 finally:
-    #                     sys.stdout = old_stdout
-    #                     sys.stderr = old_stderr
-    #
-    #             # 保存新的检查点（只保留一个最佳模型文件）
-    #             with suppress_output():
-    #                 # 1. 保存为.keras格式（用于predict以及继续训练）
-    #                 keras_path = os.path.join(checkpoint_epoch_dir,
-    #                                           f'model_stage{self.stage_number}.keras')  # epoch下面的model.keras文件
-    #                 self.model.save(keras_path)  # 默认就是.keras格式
-    #
-    #                 # 2. 保存为SavedModel格式（用于部署）
-    #                 export_path = os.path.join(checkpoint_epoch_dir, f'saved_model_stage{self.stage_number}') # epoch下面的saved_model文件夹
-    #                 self.model.export(export_path)
-    #
-    #                 # 3. 单独保存模型权重（model.keras已包含权重，此文件为兼容性/迁移学习保留）
-    #                 weight_path = os.path.join(checkpoint_epoch_dir, f'model_stage{self.stage_number}.weights.h5')
-    #                 self.model.save_weights(weight_path)
-    #
-    #             best_model_path = checkpoint_epoch_dir  # 直接赋值给外层变量
-    #             logger.debug(f"\ninner_epoch {epoch}: 保存最佳模型到 {checkpoint_epoch_dir}, {self.metric}={val_T_loss:.4f}")
-    """自定义检查点"""
+    """2. 自定义检查点"""
     checkpoint_callback = CustomCheckpointCallback(checkpoint_dir=tf_checkpoint_stage_dir,
                                                    stage_number=stage_number,
                                                    initial_epoch=inner_epoch + 1,
                                                    metric=monitor,
                                                    min_delta=min_delta)
 
-    """学习率优化：首次余弦退火"""
-    cosine_callback = CosineAnnealingWarmRestarts(
-        initial_lr=0.00039,
-        min_lr=1e-5,
-        total_epochs=20,  # 1周期总轮数
-        warmup_epochs=3,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
-        warmup_power=2.0,
-        restart_epochs=None)
+    # """学习率优化-余弦退火"""
+    # # 首次训练用
+    # cosine_callback = CosineAnnealingWarmRestarts(
+    #     initial_lr=0.00039,  # main.py 定死
+    #     min_lr=1e-5,
+    #     total_epochs=20,  # 1周期总轮数
+    #     warmup_epochs=3,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+    #     warmup_power=2.0,
+    #     restart_epochs=None)
+    #
+    # cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
+    #     cosine_callback.optimal_cosine_annealing,
+    #     verbose=1)
 
-    cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
-        cosine_callback.optimal_cosine_annealing,
-        verbose=1)
+    # # 继续训练用
+    # cosine_callback = ContinueCosineAnnealing(
+    #     initial_lr=0.00039,
+    #     min_lr=1e-5,
+    #     total_epochs=20,
+    #     warmup_epochs=1,
+    #     warmup_power=2.0,
+    #     start_epoch=inner_epoch + 1)
+    # cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
+    #     cosine_callback.optimal_cosine_annealing_with_start,
+    #     verbose=1)
 
     """固定学习率"""
-    force_callback = ForceLRCallback(start_epoch=inner_epoch + 1 if inner_epoch != 0 else 0,)
-
-    """继续训练 更新余弦退火支持继续训练"""
-    # def optimal_cosine_annealing_with_start(epoch, start_epoch=0, initial_lr=2.2584e-05,
-    #                                         min_lr=1e-6, total_epochs=25, warmup_epochs=5):
-    #     """支持从中间epoch开始的余弦退火"""
-    #
-    #     # 调整epoch：减去开始epoch
-    #     adjusted_epoch = epoch + start_epoch
-    #
-    #     # 如果adjusted_epoch已经在warmup之后
-    #     if adjusted_epoch >= warmup_epochs:
-    #         # 直接进入余弦衰减阶段
-    #         decay_epoch = adjusted_epoch - warmup_epochs
-    #         decay_total = total_epochs - warmup_epochs
-    #
-    #         # 余弦衰减
-    #         progress = decay_epoch / decay_total
-    #         cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
-    #
-    #         return min_lr + (initial_lr - min_lr) * cosine_decay
-    #     else:
-    #         # 还在warmup阶段（不太可能，因为你从27开始）
-    #         progress = adjusted_epoch / warmup_epochs
-    #         return min_lr + (initial_lr - min_lr) * (progress ** 2.0)
-    #
-    # # 使用
-    # cosine_lr_optimal = LearningRateScheduler(
-    #     lambda epoch: optimal_cosine_annealing_with_start(
-    #         epoch,
-    #         start_epoch=33,
-    #         initial_lr=2.5e-05,
-    #         min_lr=1e-6,
-    #         total_epochs=25,
-    #         warmup_epochs=0
-    #     ),
-    #     verbose=1
-    # )
+    force_callback = ForceLRCallback(start_epoch=inner_epoch + 1 if inner_epoch != 0 else 0, )
 
     """学习率优化：直接设置学习率的 Callback"""
 
@@ -642,11 +741,9 @@ def TrainingMultiModel(model_name: str,
         verbose=2,
         mode='min')
 
-    early_stopping = tf.keras.callbacks.EarlyStopping(monitor=monitor,  # 整体验证损失
-                                                      patience=early_stop_patience,  # 比学习率调度更耐心
-                                                      mode='min',  # 当监测指标停止减少时训练停止（维持最小值）
-                                                      min_delta=min_delta,  # 设置最小改善阈值，与ReduceLR相同  0.00001
-                                                      restore_best_weights=True),
+    """3. 创建TensorBoard日志目录"""
+    # 训练后，bash 查看 tensorboard --logdir=~/Python/NeuralNetwork/weights/logs
+    log_dir = os.path.join(tf_checkpoint_stage_dir, "board_logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     tensorboard_callback = tf.keras.callbacks.TensorBoard(
         log_dir=log_dir,
         histogram_freq=1,
@@ -654,6 +751,7 @@ def TrainingMultiModel(model_name: str,
         write_images=True,
         update_freq='epoch'
     )
+
     # ===========================================
     record = model.fit(
         trainset,
@@ -667,40 +765,19 @@ def TrainingMultiModel(model_name: str,
             # force_callback,# 强制学习率
             # reduceLR_lr_scheduler,
 
-            # 2. 早停：防止过拟合
-            early_stopping,
-
-            # 3. 最佳检查点
+            # 2. 最佳检查点（带早停）
             checkpoint_callback,
 
-            # 4. TensorBoard
+            # 3. TensorBoard
             tensorboard_callback
         ]
     )
-
-    # if best_model_path:
-    #     if os.path.exists(f'{best_model_path}.index'):
-    #         logger.debug(f"\n训练完成！最佳模型保存在: {best_model_path}")
-    #
-    #         # 验证文件
-    #         if os.path.exists(f"{best_model_path}.index"):
-    #             # 加载权重
-    #             try:
-    #                 model.load_weights(best_model_path)
-    #             except Exception as e:
-    #                 logger.debug(f"加载权重失败: {e}")
-    #         else:
-    #             logger.warning(f"警告：检查点文件不存在 {best_model_path}.index")
-    #
-    # else:
-    #     logger.warning("\n未保存最佳模型文件")
-    #     best_model_path = None
 
     save_dir = os.path.expanduser("~/Python/NeuralNetwork/temperature_forecasting/data/pics/")
     history_plot(history=record, model_name=model_name, save_dir=save_dir)
     best_model_info = checkpoint_callback.get_best_model_info()
 
-    return record, best_model_info['best_model_path']  # epoch
+    return record, best_model_info['best_model_epoch_path']  # epoch
 
 
 # 一般训练规律 损失值：

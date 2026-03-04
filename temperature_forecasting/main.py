@@ -263,7 +263,7 @@ def main():
         'reduce_lr_patience':3,
         'total_epochs': 50,
         'verbose': 2,
-        'continue_from':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260213_114151/tf_checkpoints_stage0', # 首次训练必须为None.
+        'continue_from':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_004235/tf_checkpoints_stage0', # 首次训练必须为None.
     }}
 
     data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
