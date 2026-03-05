@@ -6,7 +6,10 @@
 # 模型output_config是单列配置，优化成同一类配置可以一起跑。什么都不写默认回归？分类？
 # 缺失值填充 增加算法填充等
 # missing列logger 从提示改为报错 尽早暴露/结果无意义/
-# 统一下划线/标准化列有不存在需要提前验证、
+# 统一下划线/标准化列有不存在需要提前验证
+# config.yaml
+# 线程内，实现窗口和模型拆分，再彻底分离首次训练和继续训练
+
 from utils.tensorflow_config import TensorFlowConfig
 import copy
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +32,7 @@ from data.feature_engineering import (WeatherGenerationFromNumeric, GenerationFr
                                       CustomTransformer, CustomQuantileTransformer)
 from data.exploration import VisualizationForNeural
 from deployment import DeploymentManager
-from predictor import TrainedModelPredictor
+# from predictor import TrainedModelPredictor
 import logging.config
 from logging_config import LOGGING_CONFIG
 import logging
@@ -46,6 +49,7 @@ def main():
     3. 一次训练直接 predict（keras格式），
        隔日预测 predict_with_best_checkpoint(new_data)（keras格式） ，
        专用部署 save + load(格式Saved Model)
+    4.config2多层LSTM，config单层LSTM
     '''
     check_outliers_config = {'method': 'iqr', 'threshold': 1.5}
     download_duplicates_config = {
@@ -125,7 +129,8 @@ def main():
                       CategoricalOutlierProcessor(method_config=categorical_outliers_config, strategy='consolidate')
                       ], 'len_change': False},
 
-        {'obj_list': [SimpleTimeSampler(time_column='Date Time', freq_hours=1, minute=0, second=0)],'len_change': True},
+        {'obj_list': [SimpleTimeSampler(time_column='Date Time', freq_hours=1, minute=0, second=0)],
+         'len_change': True},
 
         {'obj_list': [WeatherGenerationFromNumeric(selected_columns=['wd', 'wv', 'max. wv', 'Tdew', 'T', 'rh'],
                                                    create_statistical=True)], 'len_change': False},
@@ -165,6 +170,7 @@ def main():
     # 3. 数据预处理(生成训练、验证、预测数据）
     preprocessor = CompletePreprocessor(preparation_configs)
     features_temp_train, _ = preprocessor.train(features=df_train, labels=None)
+
     # # 立即检查状态
     # logger.debug("=== 训练后立即检查 ===")
     # for name, pipeline in preprocessor.pipelines_.items():
@@ -222,6 +228,7 @@ def main():
                                'output_width': 5,
                                'shift': 24,
 
+                               'multi_tasks': True,
                                'output_config': {
                                    'T': {'type': 'regression',  # 单变量回归
                                          'loss': 'mse',  # 主损失函数
@@ -237,7 +244,7 @@ def main():
                                           'units': 1,
                                           }
                                },
-                               'multi_tasks': True,
+
                                }
 
     # multi_lstm_model_config1 = {**multi_base_model_config, **{
@@ -254,20 +261,28 @@ def main():
 
     multi_lstm_model_config2 = {**multi_base_model_config, **{
         'model_type': 'multi_lstm2*',
-        'learning_rate': 0.00039,
+        'total_epochs': 50,
         'units': [256],  # 2:1
         'return_sequences': [True],  # 上一轮的输出做本轮输入input + 上一轮输出
-        'early_stop_patience': 10,
-        'min_delta':1e-6,
-        'monitor' : 'val_T_loss',
-        'reduce_lr_patience':3,
-        'total_epochs': 50,
+        'early_stop_patience': 5,
+        'min_delta': 1e-6,
+        'monitor': 'val_T_loss',
         'verbose': 2,
-        'continue_from':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_004235/tf_checkpoints_stage0', # 首次训练必须为None.
+
+        # 首次训练配置：continue_from：None / 注意余弦配置
+        'continue_from':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_233439/tf_checkpoints_stage0',
+        'cos_min_lr': 1e-5,
+        'learning_rate': 0.00039,
+        'cos_total_epochs': 20,
+        'cos_warmup_epochs': 1,  # 3代表进行2轮预测
+        # 'reduce_lr_patience': 3,
+
+        # 使用main.py继续训练（None)
+        # 直接从continue_training.py加载训练完的最佳模型(带epoch的path)
+        'final_best_model':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
     }}
 
     data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
-
 
     # 准备指标计算数据（回测用，预测不用） 采样后的原数据
     valid_df_test, _ = preprocessor._get_step(3, 0).process(df_test_adjust)  # 处理连续性测试集的采样步骤（第4个class,第0个实例) 采样
@@ -297,11 +312,11 @@ def main():
             logger.info(f"开始训练模型: {model_name}")
 
             # 1.创建模型实例
-            model = TimeSeriesEstimator(config)
+            estimator = TimeSeriesEstimator(config)
 
             # 2.训练（加载最优检查点）
             X_copy = copy.deepcopy(X)
-            model.fit(X_copy, y=None)  # 包括训练集和验证集，一起用于模型训练,注意：以字典方式传递
+            estimator.fit(X_copy, y=None)  # 包括训练集和验证集，一起用于模型训练,注意：以字典方式传递
 
             # 3.创建后处理器并捕获pipeline状态
             postprocessor = TimeSeriesPostProcessor(
@@ -319,7 +334,7 @@ def main():
 
             # 4. 预测
             features_temp_data_copy = copy.deepcopy(data)
-            raw_predictions = model.predict(features_temp_data_copy)  # 测试数据
+            raw_predictions = estimator.predict(features_temp_data_copy)  # 测试数据
             logger.info(
                 f"测试集生成 {len(raw_predictions)} 个预测结果，每个结果代表一个预测label，形状：shape:{raw_predictions[list(config.get('output_config').keys())[0]].shape}")
 
@@ -373,8 +388,8 @@ def main():
                                                 level_mape='o')
 
             # 8. 保存状态
-            predict_window_, predict_window_config = model._forecast_window_generator()
-            best_checkpoint = model.best_checkpoint  # 'saved_model/multi_lstm1_20260104_143043/tf_checkpoints/model_epoch_2/'
+            predict_window_, predict_window_config = estimator._forecast_window_generator()
+            best_checkpoint = estimator.best_checkpoint  # 'saved_model/multi_lstm1_20260104_143043/tf_checkpoints/model_epoch_2/'
 
             if save_dir:
                 deployment = DeploymentManager(
@@ -390,7 +405,7 @@ def main():
 
             return {
                 'model_name': model_name,
-                'model': model,
+                'model': estimator,
                 'postprocessor': postprocessor,
                 'predictions': final_pred_results,
                 'raw_predictions': raw_predictions,
@@ -407,7 +422,6 @@ def main():
                 'success': False,
                 'config': config
             }
-
 
     configs = [multi_lstm_model_config2]  # multi_cnn_model_config
 
@@ -440,7 +454,6 @@ if __name__ == "__main__":
 
     matplotlib.use('Agg')
     main()
-
 
 # 并行的模型配置
 # multi_cnn_model_config = {**base_model_config, **{

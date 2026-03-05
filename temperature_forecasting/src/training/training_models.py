@@ -1,11 +1,10 @@
-import hashlib
 import logging
 import math
 import random
 
 import cloudpickle
 import numpy as np
-from keras.src.callbacks import LearningRateScheduler
+# from keras.src.callbacks import LearningRateScheduler
 
 logger = logging.getLogger(__name__)
 from evaluation.model_visualization import history_plot
@@ -17,8 +16,7 @@ import tensorflow as tf
 tf.get_logger().setLevel('ERROR')  # 设置TensorFlow日志级别
 tf.autograph.set_verbosity(0)  # 关闭AutoGraph详细日志
 
-# 同时设置absl日志（TensorFlow使用的）
-import absl.logging
+import absl.logging # 同时设置absl日志（TensorFlow使用的）
 
 absl.logging.set_verbosity(absl.logging.ERROR)
 import datetime
@@ -32,7 +30,7 @@ class SimpleTrainingManager:
     """继续训练管理器"""
 
     def __init__(self,
-                 experiment_dir='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2#_20260208_154953/tf_checkpoints_stage2',
+                 experiment_dir='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2#_20260208_154953/tf_checkpoints_stage0',
                  stage: int = 2):
 
         self.experiment_dir = experiment_dir
@@ -42,7 +40,7 @@ class SimpleTrainingManager:
         stage：标明继续训练是哪个阶段keras
         """
 
-    def load_latest_checkpoint(self, model):
+    def load_latest_checkpoint(self):
         if self.experiment_dir is None:
             raise ValueError(f"继续训练的stage目录为空，检查配置continue_from是否为None")
 
@@ -68,8 +66,9 @@ class SimpleTrainingManager:
             keras_file = os.path.join(latest_checkpoint, f'model_stage{self.stage}.keras')
             loaded_model = tf.keras.models.load_model(keras_file)  # 有权重也有优化器状态
             return latest_epoch, loaded_model
-
-        return 0, model
+        else:
+            raise FileNotFoundError(
+                f"继续训练，未找到.keras最佳模型文件，模型未成功加载\n")
 
 
 class CustomCheckpointCallback(tf.keras.callbacks.Callback):
@@ -183,7 +182,7 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             self.best_epoch = epoch
             self.patience_counter = 0
             self.wait = 0
-            self._save_checkpoint(epoch)
+            self.best_model_path = self._save_checkpoint(epoch)
             logger.debug(f"改进！保存最佳模型，{self.metric}:{current_value:.6f}")
         else:
             self.patience_counter += 1
@@ -196,6 +195,7 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
                 self.model.stop_training = True
                 logger.info(
                     f"早停于 epoch {epoch}，最佳 {self.metric}: {self.best_val_loss:.6f} 于 epoch {self.best_epoch}")
+
 
     def _save_checkpoint(self, epoch):
         current_epoch_dir = f'epoch_{epoch}/'  # 转成内部-内部
@@ -265,15 +265,25 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             #     with open(lr_state_path,'wb') as f:
             #         cloudpickle.dump(lr_schedule_state,f)
 
-        self.best_model_path = checkpoint_epoch_dir
         logger.debug(
             f"\ninner_epoch {epoch}: 保存最佳模型到 {checkpoint_epoch_dir}, 监控指标：{self.metric}：{self.best_val_loss:.4f}")
+
+        return checkpoint_epoch_dir
 
     def on_train_end(self, logs=None):
         """训练结束时打印早停信息"""
         if self.stopped_epoch > 0:
             logger.info(f"早停于 epoch {self.stopped_epoch}")
             logger.info(f"最佳 {self.metric}: {self.best_val_loss:.6f} 于 epoch {self.best_epoch}")
+
+            if self.best_model_path is None:
+                match = re.search(r'(.+)tf_checkpoints_stage(\d+)', self.checkpoint_dir)
+                pre_path = match.group(1)
+                pre_stage = self.stage_number - 1
+                self.best_model_path = os.path.join(pre_path, f'tf_checkpoints_stage{pre_stage}',
+                                        f'epoch_{self.initial_epoch - 1}')
+                logger.info(f"本次训练没有生成最佳模型，最佳模型仍然是：上期{self.best_model_path}")
+
 
     @staticmethod
     @contextlib.contextmanager
@@ -626,23 +636,40 @@ def TrainingSingleModel(model_name: str,
     return record, best_model_path
 
 
-def TrainingMultiModel(model_name: str,
-                       model,  # tf.keras.models
-                       trainset,  # x,y
-                       valset,
-                       basic_dir,
-                       total_epochs: int = 20,
-                       verbose: int = 2,
-                       min_delta=1e-6,
-                       reduce_lr_patience=2,
-                       monitor='val_T_loss',
-                       continue_from_experiment: str = None,
+def TrainingMultiModel(model_name: str, trainset, valset,
+                       learning_rate,
+                       cos_min_lr, cos_total_epochs, cos_warmup_epochs,
+                       total_epochs, verbose: int = 2, early_stop_patience=10,
+                       monitor='val_T_loss', min_delta=1e-6,
+
+                       basic_dir: str = None,
+                       continue_from: str = None,
+                       model=None,
+                       # reduce_lr_patience=2, # Reduce学习率才用
                        ):
     """
-    continue_from_experiment=None 首次训练 / 或带stage1的已存在keras文件目录
-    continue_from_experiment='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2_20260206_222944/tf_checkpoints_stage1'"""
+    多任务模型：
 
-    if continue_from_experiment is None:
+    1. 首次训练：
+        basic_dir !=None (带stage1的已存在keras文件目录)
+        model 是构建的 self.training_model_（tf.keras.models）
+        continue_from=None
+    2. 继续训练：
+        basic_dir 是None
+        model 为空，函数内部加载load .keras文件来（不需要新构建）
+        continue_from='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2_20260206_222944/tf_checkpoints_stage1'
+
+    trainset, valset ：训练集，既包括X,也包括标签y
+    early_stop_patience: 多少轮监控指标无变化就停止，融合在最佳模型类里，不用单独EarlyStopping
+    monitor：最佳模型的监控指标（目前只支持1个）
+
+    cos_total_epochs: 1周期余弦退火预热的总轮数
+    cos_warmup_epochs：4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+    余弦退火（首次训练模式，支持restart_epochs重启，继续训练不支持，默认状态None）
+
+    """
+
+    if continue_from is None and basic_dir is not None and model is not None:
         os.makedirs(basic_dir, exist_ok=True)
 
         stage_number = 0
@@ -651,97 +678,76 @@ def TrainingMultiModel(model_name: str,
         os.makedirs(tf_checkpoint_stage_dir, exist_ok=True)
         logger.info(f"首次训练模型，最佳模型将加载到:{tf_checkpoint_stage_dir}")
 
-        """1.0 学习率优化-余弦退火"""
-        # 首次训练用
+        model_ = model
+
+        # 首次训练用 1. 余弦退火
         cosine_callback = CosineAnnealingWarmRestarts(
-            initial_lr=0.00039,
-            min_lr=1e-5,
-            total_epochs=20,  # 1周期总轮数
-            warmup_epochs=3,  # 3代表2轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+            initial_lr=learning_rate,
+            min_lr=cos_min_lr,
+            total_epochs=cos_total_epochs,
+            warmup_epochs=cos_warmup_epochs,
             warmup_power=2.0,
             restart_epochs=None)
 
         cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
             cosine_callback.optimal_cosine_annealing,
             verbose=1)
+        logger.debug(
+            f"首次训练-余弦退火：周期总轮数 {cos_total_epochs},热身轮数cos_warmup_epochs-1 {cos_warmup_epochs - 1}")
 
 
     # ============继续训练逻辑===============
     else:
-        match = re.search(r"(.*)tf_checkpoints_stage(\d+)", str(continue_from_experiment))
+        match = re.search(r"(.*)tf_checkpoints_stage(\d+)", str(continue_from))
         stage_number = int(match.group(2)) + 1
         tf_checkpoint_stage_dir = os.path.join(match.group(1), f'tf_checkpoints_stage{stage_number}')
         os.makedirs(tf_checkpoint_stage_dir, exist_ok=True)
 
-        manager = SimpleTrainingManager(experiment_dir=continue_from_experiment, stage=stage_number - 1)
-        inner_epoch, model = manager.load_latest_checkpoint(model)
+        manager = SimpleTrainingManager(experiment_dir=continue_from, stage=stage_number - 1)
+        inner_epoch, model_ = manager.load_latest_checkpoint()
 
         logger.debug(
             f"加载检查点 Epoch={inner_epoch + 1} 模型，已训练 {inner_epoch + 1}/{total_epochs} 轮。下一次训练 Epoch={inner_epoch + 2}")
 
-
+        # 继续训练用
         cosine_callback = ContinueCosineAnnealing(
-            initial_lr=0.00039, # main.py 手动调整
-            min_lr=1e-5,
-            total_epochs=20,
-            warmup_epochs=1,
+            initial_lr=learning_rate,  # 继续训练手动修改在外层配置修改
+            min_lr=cos_min_lr,
+            total_epochs=cos_total_epochs,
+            warmup_epochs=cos_warmup_epochs,
             warmup_power=2.0,
             start_epoch=inner_epoch + 1)
         cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
             cosine_callback.optimal_cosine_annealing_with_start,
             verbose=1)
-    # ===========================================
+        logger.debug(
+            f"继续训练-余弦退火：周期总轮数 {cos_total_epochs},热身轮数cos_warmup_epochs-1 {cos_warmup_epochs - 1}")
 
+    # callbacks===========================================
 
     """2. 自定义检查点"""
     checkpoint_callback = CustomCheckpointCallback(checkpoint_dir=tf_checkpoint_stage_dir,
                                                    stage_number=stage_number,
                                                    initial_epoch=inner_epoch + 1,
                                                    metric=monitor,
-                                                   min_delta=min_delta)
+                                                   min_delta=min_delta,
+                                                   patience=early_stop_patience)
 
-    # """学习率优化-余弦退火"""
-    # # 首次训练用
-    # cosine_callback = CosineAnnealingWarmRestarts(
-    #     initial_lr=0.00039,  # main.py 定死
-    #     min_lr=1e-5,
-    #     total_epochs=20,  # 1周期总轮数
-    #     warmup_epochs=3,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
-    #     warmup_power=2.0,
-    #     restart_epochs=None)
-    #
-    # cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
-    #     cosine_callback.optimal_cosine_annealing,
-    #     verbose=1)
-
-    # # 继续训练用
-    # cosine_callback = ContinueCosineAnnealing(
-    #     initial_lr=0.00039,
-    #     min_lr=1e-5,
-    #     total_epochs=20,
-    #     warmup_epochs=1,
-    #     warmup_power=2.0,
-    #     start_epoch=inner_epoch + 1)
-    # cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
-    #     cosine_callback.optimal_cosine_annealing_with_start,
-    #     verbose=1)
-
-    """固定学习率"""
+    """学习率-固定 ForceLRCallback"""
     force_callback = ForceLRCallback(start_epoch=inner_epoch + 1 if inner_epoch != 0 else 0, )
 
-    """学习率优化：直接设置学习率的 Callback"""
-
+    """学习率-ReduceLROnPlateau"""
     reduceLR_lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(  # ReduceLROnPlateau
         monitor=monitor,
         factor=0.5,  # 学习率减半 factor=0.7: 每次减30%（衰减更慢）
-        patience=reduce_lr_patience,  # 2个epoch无改善就降低LR
-        min_lr=1e-7,  # 最小学习率
+        # patience=reduce_lr_patience,  # 2个epoch无改善就降低LR
+        min_lr=1e-7,
         min_delta=min_delta,  # 需要更显著改善
         cooldown=0,
         verbose=2,
         mode='min')
 
-    """3. 创建TensorBoard日志目录"""
+    """3. TensorBoard日志目录"""
     # 训练后，bash 查看 tensorboard --logdir=~/Python/NeuralNetwork/weights/logs
     log_dir = os.path.join(tf_checkpoint_stage_dir, "board_logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     tensorboard_callback = tf.keras.callbacks.TensorBoard(
@@ -752,8 +758,9 @@ def TrainingMultiModel(model_name: str,
         update_freq='epoch'
     )
 
-    # ===========================================
-    record = model.fit(
+    # callbacks===========================================
+
+    record = model_.fit(
         trainset,
         validation_data=valset,
         epochs=total_epochs,  # 用户友好
@@ -762,7 +769,7 @@ def TrainingMultiModel(model_name: str,
         callbacks=[
             # 1. 学习率：余弦退火
             cosine_lr_optimal,  # 替换ReduceLROnPlateau
-            # force_callback,# 强制学习率
+            # force_callback, # 强制学习率
             # reduceLR_lr_scheduler,
 
             # 2. 最佳检查点（带早停）
@@ -775,35 +782,35 @@ def TrainingMultiModel(model_name: str,
 
     save_dir = os.path.expanduser("~/Python/NeuralNetwork/temperature_forecasting/data/pics/")
     history_plot(history=record, model_name=model_name, save_dir=save_dir)
+
     best_model_info = checkpoint_callback.get_best_model_info()
 
     return record, best_model_info['best_model_epoch_path']  # epoch
 
-
-# 一般训练规律 损失值：
-# train loss 不断下降   validation loss不断下降---网络仍在学习
-# train loss 不断下降   validation loss不断上升---网络过拟合，添加dropout和max pooling
-# train loss 不断下降   validation loss趋于不变---网络欠拟合
-# train loss 趋于不变   validation loss趋于不变---网络陷入瓶颈，减小学习率（自适应效果不大）和batch数量减少
-# train loss 不断上升   validation loss不断上升---网络结构问题，训练超参数设置不当，数据集需要清洗等
-# train loss 不断上升   validation loss不断下降---数据集有问题，建议重新选择
-
-
-# 一般训练规律：准确度（整体训练趋势）
-# train accuracy 不断上升   validation accuracy 不断上升---网络仍在学习
-# train accuracy 不断上升   validation accuracy 不断下降---网络过拟合，添加dropout和max pooling
-# train accuracy 不断上升   validation accuracy 趋于不变---网络欠拟合
-# train accuracy 趋于不变   validation accuracy 趋于不变---网络陷入瓶颈，减小学习率（自适应效果不大）和batch数量减少
-# train accuracy 不断下降   validation loss 不断下降---网络结构问题，训练超参数设置不当，数据集需要清洗等
-# train accuracy 不断下降   validation loss 不断上升---数据集有问题，建议重新选择
-
 """
+一般训练规律 损失值：
+train loss 不断下降   validation loss不断下降---网络仍在学习
+train loss 不断下降   validation loss不断上升---网络过拟合，添加dropout和max pooling
+train loss 不断下降   validation loss趋于不变---网络欠拟合
+train loss 趋于不变   validation loss趋于不变---网络陷入瓶颈，减小学习率（自适应效果不大）和batch数量减少
+train loss 不断上升   validation loss不断上升---网络结构问题，训练超参数设置不当，数据集需要清洗等
+train loss 不断上升   validation loss不断下降---数据集有问题，建议重新选择
+
+
+一般训练规律：准确度（整体训练趋势）
+train accuracy 不断上升   validation accuracy 不断上升---网络仍在学习
+train accuracy 不断上升   validation accuracy 不断下降---网络过拟合，添加dropout和max pooling
+train accuracy 不断上升   validation accuracy 趋于不变---网络欠拟合
+train accuracy 趋于不变   validation accuracy 趋于不变---网络陷入瓶颈，减小学习率（自适应效果不大）和batch数量减少
+train accuracy 不断下降   validation loss 不断下降---网络结构问题，训练超参数设置不当，数据集需要清洗等
+train accuracy 不断下降   validation loss 不断上升---数据集有问题，建议重新选择
+
 # 常见问题和调整方案：
 问题                            | 解决方案
 --------------------------------------------------------------
 训练初期不稳定                  | 增加warmup_epochs (3→5)
 前期收敛太慢                    | 减少warmup_epochs (5→3)或增加warmup_power (1.0→2.0)
 后期还在下降，想继续训练         | 增加total_epochs (30→40)
-后期过拟合                      | 减少total_epochs (30→25)或增加EarlyStopping
 想尝试跳出局部最优              | 启用重启: restart_epochs=[15, 25]
+后期过拟合                      | 减少total_epochs (30→25)或增加EarlyStopping
 """

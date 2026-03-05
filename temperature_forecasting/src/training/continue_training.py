@@ -1,9 +1,5 @@
-from utils.tensorflow_config import ensure_tf_settings, TensorFlowConfig
-
-ensure_tf_settings()  # setdefault 不会覆盖已存在的值
-TensorFlowConfig.setup_environment()
+from utils.tensorflow_config import  TensorFlowConfig
 import tensorflow as tf
-
 import re
 import cloudpickle
 import pandas as pd
@@ -12,7 +8,7 @@ import logging
 from datetime import datetime
 
 from models import MultiTasksLstmModel, MultiTasksCnnModel, SingleTaskLstmModel
-from training.training_models import CustomCheckpointCallback, CosineAnnealingWarmRestarts, ForceLRCallback, \
+from training.training_models import CustomCheckpointCallback, CosineAnnealingWarmRestarts,  \
     ContinueCosineAnnealing
 
 logging.basicConfig(level=logging.DEBUG)
@@ -24,6 +20,9 @@ def continue_training(
         checkpoint_dir: str = 'tf_checkpoints_stage1',
         continue_inner_epoch=None,
         update_lr='custom',
+        cos_min_lr=1e-5,
+        cos_total_epochs=20,
+        cos_warmup_epochs=1,
         save_model_dir=None,  # 带stage
         monitor='val_T_loss',
         verbose=2
@@ -34,9 +33,11 @@ def continue_training(
         continue_inner_epoch:从多少轮开始继续训练（不写可推，与文件夹名一致，epoch从0计数）
         update_lr = 'from_history'(从预训练结果获得）/ 'fixed'（根据轮次 固定学习率）/custom 0.00039
         save_model_dir = 保存新训练模型地址（不填默认在同目录下的加载配置的stage后面一个）
+        cos_warmup_epochs:1代表热启动0轮，不预热直接进行衰减
         monitor:监控指标
 
     """
+    TensorFlowConfig.setup_environment()
 
     continue_dir = os.path.join(pre_path, 'continue_training')
     stage_dir = os.path.join(pre_path, checkpoint_dir)
@@ -51,6 +52,8 @@ def continue_training(
         config = cloudpickle.load(f)
 
     total_epochs = config.get('total_epochs', 50)
+    early_patience = config.get('early_stop_patience', 5)
+    min_delta = config.get('min_delta', 1e-6)
 
     # 1. 加载预处理数据
     train_save_path = os.path.join(continue_dir, f'{model_name}_preprocessed_data/train_dataset')
@@ -76,6 +79,7 @@ def continue_training(
             raise FileNotFoundError("也找不到weights.h5权重文件")
 
         model.load_weights(latest_checkpoint_file)
+        # 编译器状态恢复
         logger.info(f"重构模型结构 + 加载{latest_checkpoint_file}权重文件：{latest_checkpoint_file}")
 
     # 3. 确定初始轮数
@@ -91,28 +95,28 @@ def continue_training(
                                           model_name=model_name)
     logger.info(f"设置初始学习率为: {target_lr}")
 
-    # 5. 更新编译器
-    try:
-        opt = model.optimizer
-        logger.debug(f"Optimizer Type: {type(opt).__name__}")
-        logger.debug(f"Iterations (Step Count): {opt.iterations.numpy()}")
-        logger.debug(f"Current Learning Rate: {opt.learning_rate.numpy()}")  # 前次最佳的学习率
-
-        model.optimizer.learning_rate.assign(target_lr)
-        logger.debug(f"新一轮 Epoch {continue_inner_epoch + 2}: 强制设置LR = {target_lr:.2e} / {target_lr:.6f}")
-
-    except Exception as e:
-        logger.debug(f"无法修改学习率: {e}")
-        old = model.optimizer
-
-        model.optimizer = tf.keras.optimizers.AdamW(
-            learning_rate=target_lr,
-            weight_decay=1e-5,
-            # beta_1=getattr(old, 'beta_1', 0.9),
-            # beta_2=getattr(old, 'beta_2', 0.999),
-            # epsilon=getattr(old, 'epsilon', 1e-7)
-        )
-        logger.debug(f"创建新优化器，但复制了超参数")
+    # # 5. 更新编译器
+    # try:
+    #     opt = model.optimizer
+    #     logger.debug(f"Optimizer Type: {type(opt).__name__}")
+    #     logger.debug(f"Iterations (Step Count): {opt.iterations.numpy()}")
+    #     logger.debug(f"Current Learning Rate: {opt.learning_rate.numpy()}")  # 前次最佳的学习率
+    #
+    #     model.optimizer.learning_rate.assign(target_lr)
+    #     logger.debug(f"新一轮 Epoch {continue_inner_epoch + 2}: 强制设置LR = {target_lr:.2e} / {target_lr:.6f}")
+    #
+    # except Exception as e:
+    #     logger.debug(f"无法修改学习率: {e}")
+    #     old = model.optimizer
+    #
+    #     model.optimizer = tf.keras.optimizers.AdamW(
+    #         learning_rate=target_lr,
+    #         weight_decay=1e-5,
+    #         # beta_1=getattr(old, 'beta_1', 0.9),
+    #         # beta_2=getattr(old, 'beta_2', 0.999),
+    #         # epsilon=getattr(old, 'epsilon', 1e-7)
+    #     )
+    #     logger.debug(f"创建新优化器，但复制了超参数")
 
     # 6. 设置新训练的模型保存目录
     if save_model_dir is None:
@@ -126,17 +130,41 @@ def continue_training(
         initial_epoch=continue_inner_epoch + 1,  # 用户友好
         metric=monitor,
         target_lr=target_lr,
-        min_delta=1e-6,
-        early_patience=10,
+        cos_min_lr=cos_min_lr,
+        cos_total_epochs=cos_total_epochs,
+        cos_warmup_epochs=cos_warmup_epochs,
+        min_delta=min_delta,
+        early_patience=early_patience,
     )
 
     # 8. 继续训练
     logger.info(f"继续训练Epoch: {continue_inner_epoch + 2}/{total_epochs} 轮")
+
+    # import hashlib
+    # import numpy as np
+    # def get_model_fingerprint(model):
+    #     hasher=hashlib.md5()
+    #     for w in model.weights:
+    #         hasher.update(w.numpy().tobytes())
+    #     if hasattr(model,'optimizer') and model.optimizer:
+    #         opt_vars=model.optimizer.variables
+    #         for v in opt_vars:
+    #             hasher.update(v.numpy().tobytes())
+    #
+    #     return hasher.hexdigest()
+    # fp = get_model_fingerprint(model)
+    # print(f"🔍 Model+Optimizer Fingerprint before fit: {fp}")
+    #
+    # tf.random.set_seed(42)
+    # np.random.seed(42)
+    # random.seed(42)
+    # os.environ['PYTHONHASHSEED'] = '42'
+
     new_history = model.fit(
         trainset,
         validation_data=valset,
         epochs=total_epochs,  # 用户友好
-        initial_epoch=continue_inner_epoch + 1,  # 用户友好
+        initial_epoch=continue_inner_epoch + 1 if continue_inner_epoch != 0 else 0,  # 用户友好
         verbose=verbose,  # epoch每轮输出一行记录
         callbacks=callbacks)
 
@@ -332,7 +360,8 @@ def get_training_history(save_dir, model_name, stage):
         return history_data
 
 
-def get_continue_callbacks(checkpoint_model_dir, initial_epoch, metric, stage_number, target_lr,min_delta,early_patience):
+def get_continue_callbacks(checkpoint_model_dir, initial_epoch, metric, stage_number, target_lr, cos_min_lr,cos_total_epochs, cos_warmup_epochs,min_delta,
+                           early_patience):
     callbacks = []
 
     # 1. ModelCheckpoint - 保存最佳模型
@@ -347,28 +376,34 @@ def get_continue_callbacks(checkpoint_model_dir, initial_epoch, metric, stage_nu
     if stage_number < 0:
         cosine_callback = CosineAnnealingWarmRestarts(
             initial_lr=target_lr,
-            min_lr=1e-5,
-            total_epochs=20,  # 1周期总轮数
-            warmup_epochs=3,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+            min_lr=cos_min_lr,
+            total_epochs=cos_total_epochs, # 1周期总轮数
+            warmup_epochs=cos_warmup_epochs,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
             warmup_power=2.0,
             restart_epochs=None)
 
         cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
             cosine_callback.optimal_cosine_annealing,
             verbose=1)
+        logger.debug(
+            f"首次训练-余弦退火：周期总轮数 {cos_total_epochs},热身轮数cos_warmup_epochs-1 {cos_warmup_epochs - 1}")
+
         callbacks.append(cosine_lr_optimal)
     else:
         # 2. 学习率余弦退火-继续训练
         cosine_callback = ContinueCosineAnnealing(
             initial_lr=target_lr,
-            min_lr=1e-5,
-            total_epochs=20,
-            warmup_epochs=1, # 1代表0轮热身(不热身）
+            min_lr=cos_min_lr,
+            total_epochs=cos_total_epochs,
+            warmup_epochs=cos_warmup_epochs,  # 1代表0轮热身(不热身）
             warmup_power=2.0,
             start_epoch=initial_epoch)
         cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
             cosine_callback.optimal_cosine_annealing_with_start,
             verbose=1)
+        logger.debug(
+            f"继续训练-余弦退火：周期总轮数 {cos_total_epochs},热身轮数cos_warmup_epochs-1 {cos_warmup_epochs - 1}")
+
         callbacks.append(cosine_lr_optimal)
 
     # 3.学习率-固定值(不和余弦退火重复）
@@ -383,7 +418,6 @@ def get_continue_callbacks(checkpoint_model_dir, initial_epoch, metric, stage_nu
         update_freq='epoch'
     )
     callbacks.append(tensorboard_callback)
-
 
     return callbacks
 
@@ -405,13 +439,16 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     model, _, _, save_model_dir, new_history = continue_training(
-        pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_004235',
+        pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745',
         checkpoint_dir='tf_checkpoints_stage0',
         continue_inner_epoch=None,
         save_model_dir=None,  # 带stage
         update_lr='custom',
+        cos_min_lr=1e-5,
+        cos_total_epochs=20,
+        cos_warmup_epochs=1,
         monitor='val_T_loss',
         verbose=2
     )
-    print(f"\n训练完成！模型保存在: {save_model_dir}")
+    print(f"\n训练完成！相关信息保存在: {save_model_dir}")
     print(f"最终验证损失: {new_history.history['val_loss'][-1]:.4f}")

@@ -2,7 +2,7 @@ from datetime import datetime
 import os, cloudpickle, json, shutil
 from pathlib import Path
 import logging
-
+import re
 import pandas as pd
 from sklearn.utils.validation import check_is_fitted
 
@@ -26,8 +26,9 @@ class DeploymentManager:
         self.deploy_path.mkdir(parents=True, exist_ok=True)  # 父目录不存在自动创建
 
         # 1. 保存模型（从检查点复制 SavedModel）
-        source_savedmodel = Path(self.best_checkpoint) / 'saved_model'
-        target_savedmodel = self.deploy_path / 'saved_model'
+        match = int(re.search(r'tf_checkpoints_stage(\d+)',self.best_checkpoint).group(1))
+        source_savedmodel = Path(self.best_checkpoint) / f'saved_model_stage{match}'
+        target_savedmodel = self.deploy_path / f'{self.model_name}_saved_model_stage{match}'
 
         if source_savedmodel.exists():
             if target_savedmodel.exists():
@@ -42,7 +43,7 @@ class DeploymentManager:
 
         # 2. 保存CompletePreprocessor
         if hasattr(self, 'preprocessor') and self.preprocessor is not None:
-            preprocessor_path = os.path.join(deployment_path, 'preprocessor.cpkl')
+            preprocessor_path = os.path.join(deployment_path, f'{self.model_name}_preprocessor.cpkl')
             with open(preprocessor_path, 'wb') as f:
                 cloudpickle.dump(self.preprocessor, f)
             logger.info(f"已保存 CompletePreprocessor:{preprocessor_path}")
@@ -50,13 +51,13 @@ class DeploymentManager:
 
         # 3. 保存TimeSeriesPostProcessor
         if hasattr(self, 'postprocessor') and self.postprocessor is not None:
-            postprocessor_path = os.path.join(deployment_path, 'postprocessor.cpkl')
+            postprocessor_path = os.path.join(deployment_path, f'{self.model_name}_postprocessor.cpkl')
             with open(postprocessor_path, 'wb') as f:
                 cloudpickle.dump(self.postprocessor, f)
 
             # 3.1 保存postprocessor的serialized_states
             if hasattr(self.postprocessor, 'serialized_states'):
-                states_path = os.path.join(deployment_path, 'pipeline_states.cpkl')
+                states_path = os.path.join(deployment_path, f'{self.model_name}_pipeline_states.cpkl')
                 with open(states_path, 'wb') as f:
                     cloudpickle.dump(self.postprocessor.serialized_states, f)
 
@@ -85,13 +86,13 @@ class DeploymentManager:
                 }
         }
 
-        config_path = os.path.join(deployment_path, 'deployment_config.cpkl')
+        config_path = os.path.join(deployment_path, f'{self.model_name}_deployment_config.cpkl')
         with open(config_path,'wb') as f:
             cloudpickle.dump(config, f)
 
         # 5.保存窗口生成器
         if hasattr(self,'window_generator') and self.window_generator is not None:
-            window_gen_path = os.path.join(deployment_path, 'window_generator.cpkl')
+            window_gen_path = os.path.join(deployment_path, f'{self.model_name}_window_generator.cpkl')
             with open(window_gen_path,'wb') as f:
                 cloudpickle.dump(self.window_generator,f)
             logger.info(f"已保存 WindowGenerator:{window_gen_path}")
@@ -245,7 +246,7 @@ class DeploymentManager:
         return statistics if statistics else None
 
     def _save_requirements(self,deploy_path):
-        requirements_path = os.path.join(deploy_path,'requirements.txt')
+        requirements_path = os.path.join(deploy_path,f'{self.model_name}_requirements.txt')
 
         requirements = [
             '# ==================',

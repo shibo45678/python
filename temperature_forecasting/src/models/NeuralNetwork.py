@@ -1,4 +1,3 @@
-import json
 import random
 
 import cloudpickle
@@ -8,7 +7,7 @@ from collections import defaultdict
 from datetime import datetime
 import os
 from pathlib import Path
-from typing import Dict, Any, List, BinaryIO
+from typing import Dict, Any, List
 import re
 import datetime
 import numpy as np
@@ -68,7 +67,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.stage_number_=-1
 
     def fit(self, X: dict, y=None):
-        # 写出数据源
         train_datasets = X['train_datasets']
         val_datasets = X['val_datasets']
 
@@ -90,97 +88,117 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         train_window_data = self.train_window_gen_.createDataset(train_datasets_)
         val_window_data = self.train_window_gen_.createDataset(val_datasets_)
 
-        continue_train = self.model_config.get('continue_from', None)
+        """
+        在保证不影响 main函数，目前 preprocessor,postprocess 以及deployment逻辑（保证进程活着）的前提下，存储模型。self.best_checkpoint 来源：
+        1. 训练：使用main.py进行首次或者继续训练，当次得到的最佳模型
+        2. 直接加载已有模型：使用continue.py单独进行训练后的模型
+        该位置需要保证：embedding_info_纳入
+        """
+        final_best_model = self.model_config.get('final_best_model',None)
 
-        # 首次训练
-        if continue_train is None:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            basic_dir = f"saved_model/{self.model_config['model_type']}_{timestamp}"
-            os.makedirs(basic_dir, exist_ok=True)  # 存模型最佳检查点
+        if final_best_model is None:
 
-            continue_training_dir = os.path.join(basic_dir, 'continue_training')  # 继续训练文件夹
-            os.makedirs(continue_training_dir, exist_ok=True)
+            # 1.3 训练
+            continue_train = self.model_config.get('continue_from', None)
+            model_name = self.model_config.get('model_type','unknown')
+            multi_model = self.model_config.get('multi_tasks',False)
 
-            self._save_preprocessed_data(continue_training_dir=continue_training_dir, trainset=train_window_data,
-                                         valset=val_window_data)
-            self.stage_number_ = -1
 
-        # ====继续训练用====
-        else:
-            basic_dir = None
-            match = re.search(r"(.*)tf_checkpoints_stage(\d+)", str(continue_train))
-            continue_training_dir = os.path.join(match.group(1),'continue_training')
-            self.stage_number_ = int(match.group(2))
+            training_config = {'model_name': model_name, 'continue_from':continue_train,
+                               'trainset': train_window_data,'valset': val_window_data,
+                               'learning_rate': self.model_config['learning_rate'],
+                               'cos_min_lr': self.model_config['cos_min_lr'],
+                               'cos_total_epochs': self.model_config['cos_total_epochs'],
+                               'cos_warmup_epochs': self.model_config['cos_warmup_epochs'],
+                               'total_epochs': self.model_config['total_epochs'],
+                               'verbose': self.model_config['verbose'],
+                               'early_stop_patience': self.model_config['early_stop_patience'],
+                               'monitor': self.model_config['monitor'], 'min_delta': self.model_config['min_delta']}
 
-        # ================
+            if continue_train is None:
+                # 首次（构建模型）
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                basic_dir = f"saved_model/{self.model_config['model_type']}_{timestamp}"
+                os.makedirs(basic_dir, exist_ok=True)
 
-        # 1.3 多任务/单任务分支
-        if self.model_config['multi_tasks']:
+                continue_training_dir = os.path.join(basic_dir, 'continue_training')
+                os.makedirs(continue_training_dir, exist_ok=True)
 
-            if self.model_config['model_type'].startswith('multi_lstm'):
-                model_config = {**self.model_config,
-                                'embedding_configs': self.embedding_info_}
+                self.stage_number_ = -1
 
-                lstm_model = MultiTasksLstmModel(model_config)
-                lstm_model_ = lstm_model._build_lstm_model()
-                self.training_model_ = lstm_model_
-
-            elif self.model_config['model_type'].startswith('multi_cnn'):
-                model_config = {**self.model_config,  # 解包
-                                'embedding_configs': self.embedding_info_}  # 追加
-                cnn_model = MultiTasksCnnModel(architecture_type='enhance_parallel', config=model_config)
-                cnn_model_ = cnn_model._build_cnn_model()
-                self.training_model_ = cnn_model_
-
+                self._save_preprocessed_data(continue_training_dir=continue_training_dir, trainset=train_window_data,
+                                             valset=val_window_data)
             else:
-                raise ValueError(f"未支持的模型{self.model_config['model_type']}")
-            # 1.4 训练模型
-            self.history_, best_checkpoint = TrainingMultiModel(model_name=self.model_config['model_type'],
-                                                                model=self.training_model_, trainset=train_window_data,
-                                                                valset=val_window_data,
-                                                                basic_dir=basic_dir,
-                                                                total_epochs=self.model_config['total_epochs'],
-                                                                verbose=self.model_config['verbose'],
-                                                                monitor=self.model_config['monitor'],
-                                                                min_delta=self.model_config[
-                                                                    'min_delta'],
-                                                                continue_from_experiment=self.model_config[
-                                                                    'continue_from'])
-        # 单任务
-        else:
-            if self.model_config['model_type'].startswith('single_lstm'):
-                model_config = {**self.model_config,
-                                'embedding_configs': self.embedding_info_}
-                lstm_model = SingleTaskLstmModel(model_config)
-                lstm_model_ = lstm_model._build_lstm_model()
-                self.training_model_ = lstm_model_
+                # 继续（直接加载）
+                basic_dir=None
+                match = re.search(r"(.*)tf_checkpoints_stage(\d+)", str(continue_train))
+                continue_training_dir = os.path.join(match.group(1), 'continue_training')
+                self.stage_number_ = int(match.group(2))
+
+            training_config.update({'basic_dir':basic_dir})
+
+
+            # 1.3.1 多任务/单任务分支
+            if multi_model:
+
+                if continue_train is not None:
+                    first_training_config_multi = {**training_config,'model':None}
+                else:
+                    if model_name.startswith('multi_lstm'):
+                        model_config = {**self.model_config,
+                                        'embedding_configs': self.embedding_info_}
+
+                        lstm_model = MultiTasksLstmModel(model_config)
+                        lstm_model_ = lstm_model._build_lstm_model()
+                        self.training_model_ = lstm_model_
+
+                    elif model_name.startswith('multi_cnn'):
+                        model_config = {**self.model_config,  # 解包
+                                        'embedding_configs': self.embedding_info_}  # 追加
+                        cnn_model = MultiTasksCnnModel(architecture_type='enhance_parallel', config=model_config)
+                        cnn_model_ = cnn_model._build_cnn_model()
+                        self.training_model_ = cnn_model_
+
+                    else:
+                        raise ValueError(f"未支持的模型{model_name}")
+
+                    first_training_config_multi = {**training_config,'model': self.training_model_}
+
+                self.history_, best_checkpoint_epoch = TrainingMultiModel(**first_training_config_multi)
+
+
+            # 1.3.2 单任务
             else:
-                raise ValueError(f"未支持的模型{self.model_config['model_type']}")
+                if continue_train is not None:
+                    first_training_config_single = {**training_config,'model':None}
+                else:
+                    if model_name.startswith('single_lstm'):
+                        model_config = {**self.model_config,
+                                        'embedding_configs': self.embedding_info_}
+                        lstm_model = SingleTaskLstmModel(model_config)
+                        lstm_model_ = lstm_model._build_lstm_model()
+                        self.training_model_ = lstm_model_
+                    else:
+                        raise ValueError(f"未支持的模型{self.model_config['model_type']}")
 
-            self.history_, best_checkpoint = TrainingSingleModel(model_name=self.model_config['model_type'],
-                                                                 model=self.training_model_, trainset=train_window_data,
-                                                                 valset=val_window_data,
-                                                                 basic_dir=basic_dir,
-                                                                 total_epochs=self.model_config['total_epochs'],
-                                                                 verbose=self.model_config['verbose'],
-                                                                 early_stop_patience=self.model_config[
-                                                                     'early_stop_patience'],
-                                                                 min_delta=self.model_config[
-                                                                     'min_delta'],
-                                                                 monitor = self.model_config['monitor'],
-                                                                 continue_from_experiment=self.model_config[
-                                                                     'continue_from'])
+                    first_training_config_single = {**training_config,'model': self.training_model_}
 
-        #  ====继续训练用====  存预处理数据 + 训练历史
-        self._save_model_config(continue_training_dir=continue_training_dir, config=model_config,
-                                stage_number=self.stage_number_)
+                self.history_, best_checkpoint_epoch = TrainingSingleModel(**first_training_config_single)
 
-        self._save_training_history(history=self.history_, continue_training_dir=continue_training_dir,
-                                    stage_number=self.stage_number_)
-        # ==================
+
+            #  存每次训练的配置 + 训练历史
+            self._save_model_config(continue_training_dir=continue_training_dir, stage_number=self.stage_number_)
+
+            self._save_training_history(history=self.history_, continue_training_dir=continue_training_dir,
+                                        stage_number=self.stage_number_)
+
+
+        # continue_training.py加载继续训练后的最佳模型
+        else:
+            best_checkpoint_epoch = final_best_model
 
         # 保存最佳检查点路径供后续使用
-        self.best_checkpoint = best_checkpoint  # epoch/
+        self.best_checkpoint = best_checkpoint_epoch  # 带epoch/
 
         # 训练完成后，创建用于预测的模型
         self.prediction_model_ = self.load_best_model()
@@ -222,11 +240,11 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         val_save_path = os.path.join(saved_data_path, 'val_dataset')
         valset.save(val_save_path)
 
-    def _save_model_config(self, continue_training_dir, config, stage_number):
-        model_name = config.get('model_type')
+    def _save_model_config(self, continue_training_dir, stage_number):
+        model_name = self.model_config['model_type']
         saved_config_path = os.path.join(continue_training_dir, f'{model_name}_config_stage{stage_number+1}.cpkl')
         with open(saved_config_path, 'wb') as f:
-            cloudpickle.dump(config, f)
+            cloudpickle.dump(self.model_config, f)
 
     def _save_training_history(self, history, continue_training_dir, stage_number):
         model_name = self.model_config.get('model_type', 'unknown')
@@ -262,7 +280,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         return history_path,csv_path
 
     def load_best_model(self):
-        """用于预测的干净模型"""
 
         if not hasattr(self, 'best_checkpoint'):
             raise ValueError('未找到最佳模型检查点')

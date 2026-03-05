@@ -1,5 +1,7 @@
 import os
 import numpy as np
+
+# os.environ['OMP_NUM_THREADS'] = '1' # 限制单线程（可选）
 def ensure_tf_settings():
     """确保环境变量被设置（可在任何地方调用）"""
     os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')
@@ -14,6 +16,11 @@ import random
 random.seed(42)
 np.random.seed(42)
 tf.random.set_seed(42) # 最后设置种子（作为fallback）
+
+# 限制单线程（可选）
+# tf.config.threading.set_intra_op_parallelism_threads(1)
+# tf.config.threading.set_inter_op_parallelism_threads(1)
+# tf.config.experimental.enable_op_determinism()
 
 
 
