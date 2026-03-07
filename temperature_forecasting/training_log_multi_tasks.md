@@ -76,7 +76,7 @@
 
 
 ## 第三阶段 epoch 34-39
-- 增加 内部的dropout： dropout=0.1, current_dropout=0.05
+- 增加 内部的dropout： dropout=0.1, recurrent_dropout=0.05
 - 修改 dropout T任务：0.25 rh任务：0.0
 - 修改：cosine_lr_optimal 替换成ForceLRCallback直接学习率的callback 2.2584e-05
 - 其他不变
@@ -112,7 +112,7 @@
     - epochs: 30,
     - early_stop_patience：5,
     ** loss_weights: 0.65:0.35**
-    ** 内部的dropout： dropout=0.1, current_dropout=0.05**
+    ** 内部的dropout： dropout=0.1, recurrent_dropout=0.05**
     ** T任务Dropout(0.27），rh任务Dropout(0.05)**
 
     - batch_size: 32
@@ -131,12 +131,13 @@
   - 调整：
       - 增加滞后特征 T lag_1h,lag_1d,rh(yes)
       - 共享LSTM 256，专用LSTM（T=144, RH=96) return_sequences': [True] 专用层各自False
+      - 专用dropout最佳：T_dropout=0.30, RH_dropout=0.05
+      - 共享层：[0.10, recent 0.05]
       - early_stop_patience：8
       - reduce_lr_patience：3 （ReduceLROnPlateau）
       - epochs:50
       - loss_weights: 0.6:0.4
-      - 专用dropout最佳：T_dropout=0.30, RH_dropout=0.05
-      - 共享层：[0.10, recent 0.05]
+
       - learning_rate: ReduceLROnPlateau
     
       ReduceLROnPlateau ：
@@ -144,7 +145,7 @@
           - factor:0.5    
           - min_lr:1e-7
           - min_delta=1e-4
-  - 
+  
   - batch_size: 32
   - optimizer: Adam
 
@@ -153,3 +154,73 @@ T_loss: 0.0622 ,val_T_loss: 0.0618 | T_mae: 0.1939 ,val_T_mae: 0.1954
 rh_loss: 0.0289 ,val_rh_loss: 0.0279 | rh_mae: 0.1353 ,val_rh_mae: 0.1334
 loss: 0.0479 val_loss: 0.0483 
 learning_rate: 8.7500e-05
+
+
+
+# 继续训练
+ - 调整
+   - 弃用reduce_lr_patience：3 （ReduceLROnPlateau）改用余弦退火
+   - optimizer: AdamW
+   - 整体配置的改变
+   - 尚未尝试修改batch，以及继续AdamW尝试 weight_decay=1e-5
+
+   - 结果：
+   val_T_loss: 0.0616 epoch 17 （未过拟合）
+   T_loss: 0.0617 ,val_T_loss: 0.0616 | T_mae: 0.1933 ,val_T_mae: 0.1946
+   rh_loss: 0.0291 ,val_rh_loss: 0.0276 | rh_mae: 0.1360 ,val_rh_mae: 0.1327
+   loss: 0.0487 val_loss: 0.0480
+   learning_rate: 2.1456e-05
+
+   val_T_loss: 0.0616 epoch 22 （稍微过拟合）
+   T_loss: 0.0613⬇️ ,val_T_loss: 0.0616⬇️| T_mae: 0.1933⬇️ ,val_T_mae: 0.1948⬇️
+   rh_loss: 0.0289 ,val_rh_loss: 0.0276⬇️ | rh_mae:0.1356⬇️ ,val_rh_mae: 0.1327⬇️
+   loss: 0.0484⬆️ val_loss: 0.0480⬇️
+   learning_rate: 3.5455e-05⬇️
+ - 
+ - 贴上具体参数：
+   multi_base_model_config = {'numeric_columns': num_cols,
+                               'categorical_columns': cat_cols,
+                               'time_column': time_col,
+                               'input_width': 6,
+                               'output_width': 5,
+                               'shift': 24,
+
+                               'total_epochs': 50,
+                               'units': [256],  # 2:1 # len控制lstm的层数
+                               'return_sequences': [True],  # 上一轮的输出做本轮输入input + 上一轮输出
+                               'early_stop_patience': 5,
+                               'min_delta': 1e-6,
+                               'monitor': 'val_T_loss',
+                               'verbose': 2,
+                               
+                               'learning_rate': 0.00039,
+                               'cos_min_lr': 1e-5,
+                               'cos_total_epochs': 20,
+                               'cos_warmup_epochs': 1,  # 3代表进行2轮预测
+                               # 'reduce_lr_patience': 3,
+                               }
+
+    multi_lstm_model_config2 = {**base_lstm_model_config, **{
+        'model_type': 'multi_lstm2*', # 数字代表LSTM层数(包括：公共层和模型.py的专用LSTM）
+        'multi_tasks': True,
+        'output_config': {
+            'T': {'type': 'regression',  # 单变量回归
+                  'loss': 'mse',  # 主损失函数
+                  'metrics': ['mae'],  # 额外指标：平均绝对误差
+                  'loss_weights': 0.6,
+                  'units': 1,  # 每个时间步预测n个特征
+                  },
+
+            'rh': {'type': 'regression',
+                   'loss': 'mse',
+                   'metrics': ['mae'],
+                   'loss_weights': 0.4,
+                   'units': 1}}
+        
+        # 首次训练配置：continue_from：None / 注意余弦配置
+        'continue_from':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_233439/tf_checkpoints_stage0',
+        
+        # 使用main.py继续训练（None)
+        # 直接从continue_training.py加载训练完的最佳模型(带epoch的path)
+        'final_best_model':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
+    }}

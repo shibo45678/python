@@ -1968,102 +1968,153 @@ import tensorflow as tf
 #     # 需要热身 warmup_epochs =2，代表热身1轮（即epoch=23 热身，之后衰减）
 #     res2 = optimal_cosine_annealing_with_start(epoch,start_epoch=23,warmup_epochs=2,total_epochs=20,initial_lr=0.00035,min_lr=1e-6,warmup_power=2)
 #     print(res2)
-class CosineAnnealingWarmRestarts(tf.keras.callbacks.Callback):
-    def __init__(self, initial_lr=0.00035, min_lr=1e-6, total_epochs=30, warmup_epochs=5,
-                 warmup_power=2.0, restart_epochs: list = None):
-        super().__init__()
-        self.initial_lr = initial_lr
-        self.min_lr = min_lr
-        self.total_epochs = total_epochs
-        self.warmup_epochs = warmup_epochs
-        self.warmup_power = warmup_power
-        self.restart_epochs = restart_epochs or []
-        """
-        参数:
-        - initial_lr: 初始学习率 (0.00035)  -> 顶
-        - min_lr: 最小学习率 (1e-6) ->  脚
-        - total_epochs: 1周期的总epoch数
-        - warmup_epochs: warmup阶段epoch数（先小学习率"热身"，再大学习率训练）
-        - warmup_power: warmup曲线形状 (1=线性（直线）, 2=二次（曲线）)
-        - restart_epochs: 重启点列表，如[15, 25]表示在第15、25个epoch重启
-        """
+# class CosineAnnealingWarmRestarts(tf.keras.callbacks.Callback):
+#     def __init__(self, initial_lr=0.00035, min_lr=1e-6, total_epochs=30, warmup_epochs=5,
+#                  warmup_power=2.0, restart_epochs: list = None):
+#         super().__init__()
+#         self.initial_lr = initial_lr
+#         self.min_lr = min_lr
+#         self.total_epochs = total_epochs
+#         self.warmup_epochs = warmup_epochs
+#         self.warmup_power = warmup_power
+#         self.restart_epochs = restart_epochs or []
+#         """
+#         参数:
+#         - initial_lr: 初始学习率 (0.00035)  -> 顶
+#         - min_lr: 最小学习率 (1e-6) ->  脚
+#         - total_epochs: 1周期的总epoch数
+#         - warmup_epochs: warmup阶段epoch数（先小学习率"热身"，再大学习率训练）
+#         - warmup_power: warmup曲线形状 (1=线性（直线）, 2=二次（曲线）)
+#         - restart_epochs: 重启点列表，如[15, 25]表示在第15、25个epoch重启
+#         """
+#
+#     def optimal_cosine_annealing(self, epoch):
+#         """
+#         - epoch: 当前epoch
+#         """
+#         # 处理重启逻辑
+#         if self.restart_epochs and len(self.restart_epochs) > 0:
+#             restart_epochs = sorted(self.restart_epochs)
+#             current_cycle_start = 0
+#             cycle_length = self.total_epochs
+#
+#             for i in range(len(restart_epochs)):
+#                 restart_epoch = restart_epochs[i]
+#                 if epoch >= restart_epoch:
+#                     current_cycle_start = restart_epoch
+#
+#                     # 计算当前周期的长度
+#                     if i + 1 < len(restart_epochs):
+#                         next_restart = restart_epochs[i + 1]
+#                         cycle_length = next_restart - restart_epoch
+#                     else:
+#                         cycle_length = self.total_epochs - restart_epoch
+#                 else:
+#                     # 处理第一个周期（0到第一个重启点）的情况
+#                     if i == 0:
+#                         cycle_length = restart_epoch - 0
+#                     break
+#
+#             epoch_in_cycle = epoch - current_cycle_start
+#             effective_total = cycle_length
+#         else:
+#             epoch_in_cycle = epoch
+#             effective_total = self.total_epochs
+#
+#         # 还在Warmup阶段
+#         if epoch_in_cycle+1 < self.warmup_epochs:
+#             warmup_progress = (epoch_in_cycle + 1) / self.warmup_epochs # 是当前周期内的相对位置 归一化到[0, 1]范围
+#             warmup_factor = warmup_progress ** self.warmup_power
+#             return self.min_lr + (self.initial_lr - self.min_lr) * warmup_factor  # 确保学习率始终大于最小
+#
+#         if effective_total <= self.warmup_epochs:
+#             return self.min_lr
+#
+#         # 余弦退火阶段
+#         adjusted_epoch = (epoch_in_cycle+1) - (self.warmup_epochs-1)
+#         adjusted_total = effective_total - (self.warmup_epochs-1)
+#
+#         # 确保不除零
+#         if adjusted_total <= 0:
+#             return self.min_lr
+#
+#         progress = adjusted_epoch / adjusted_total
+#
+#         cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+#
+#         return self.min_lr + (self.initial_lr - self.min_lr) * cosine_decay
+#
+# for epoch in range(20) :
+#     cosine_callback = CosineAnnealingWarmRestarts(
+#                 initial_lr=0.00039,
+#                 min_lr=1e-5,
+#                 total_epochs=20,  # 1周期总轮数
+#                 warmup_epochs=1,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+#                 warmup_power=2.0,
+#                 restart_epochs=[10])
+#     # 不需要热身，直接衰减
+#     res=cosine_callback.optimal_cosine_annealing(epoch)
+#     print(f'epoch:{epoch}:{res}')
+#
+# for epoch in range(21) :
+#     cosine_callback = CosineAnnealingWarmRestarts(
+#                 initial_lr=0.00039,
+#                 min_lr=1e-5,
+#                 total_epochs=20,  # 1周期总轮数
+#                 warmup_epochs=2,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+#                 warmup_power=2.0,
+#                 restart_epochs=[10])
+#     # 需要热身1轮后衰减
+#     res2=cosine_callback.optimal_cosine_annealing(epoch)
+#     print(f'epoch:{epoch}:{res2}')
+#
 
-    def optimal_cosine_annealing(self, epoch):
-        """
-        - epoch: 当前epoch
-        """
-        # 处理重启逻辑
-        if self.restart_epochs and len(self.restart_epochs) > 0:
-            restart_epochs = sorted(self.restart_epochs)
-            current_cycle_start = 0
-            cycle_length = self.total_epochs
 
-            for i in range(len(restart_epochs)):
-                restart_epoch = restart_epochs[i]
-                if epoch >= restart_epoch:
-                    current_cycle_start = restart_epoch
+def cal_metric(min_delta,current_val_loss,current_loss):
+    best_val_loss =0.060108
+    best_loss =0.05865
 
-                    # 计算当前周期的长度
-                    if i + 1 < len(restart_epochs):
-                        next_restart = restart_epochs[i + 1]
-                        cycle_length = next_restart - restart_epoch
-                    else:
-                        cycle_length = self.total_epochs - restart_epoch
-                else:
-                    # 处理第一个周期（0到第一个重启点）的情况
-                    if i == 0:
-                        cycle_length = restart_epoch - 0
-                    break
-
-            epoch_in_cycle = epoch - current_cycle_start
-            effective_total = cycle_length
+    if current_val_loss < best_val_loss - min_delta:
+        current_gap_abs = abs(current_val_loss - current_loss)
+        best_gap_abs = abs(best_val_loss - best_loss)   # 需要记录最佳时的训练损失
+        if current_gap_abs <= best_gap_abs * 1.1:        # 允许绝对差距小幅增大
+            best_val = current_val
+            best_train_loss = train_loss
+            save_model()
+            return '可更新'
         else:
-            epoch_in_cycle = epoch
-            effective_total = self.total_epochs
+            return '不能更新'
 
-        # 还在Warmup阶段
-        if epoch_in_cycle+1 < self.warmup_epochs:
-            warmup_progress = (epoch_in_cycle + 1) / self.warmup_epochs # 是当前周期内的相对位置 归一化到[0, 1]范围
-            warmup_factor = warmup_progress ** self.warmup_power
-            return self.min_lr + (self.initial_lr - self.min_lr) * warmup_factor  # 确保学习率始终大于最小
 
-        if effective_total <= self.warmup_epochs:
-            return self.min_lr
+min_delta = 1e-6
 
-        # 余弦退火阶段
-        adjusted_epoch = (epoch_in_cycle+1) - (self.warmup_epochs-1)
-        adjusted_total = effective_total - (self.warmup_epochs-1)
 
-        # 确保不除零
-        if adjusted_total <= 0:
-            return self.min_lr
+current_val_loss =0.060082
+current_loss = 0.05845
+print(cal_metric(min_delta,current_val_loss,current_loss))
 
-        progress = adjusted_epoch / adjusted_total
+# 参数设置
+min_delta = 1e-6  # 建议设大一点，忽略噪声
+gap_tolerance_ratio = 1.1  # 允许 Gap 增大 10%
+min_gap_threshold = 0.001   # 防止过程中的 Gap 过小： 0*1.1=0 导致的误杀 (根据量级调整) ，同时也不能太小
 
-        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+if current_val_loss < best_val_loss - min_delta:
+    current_gap = abs(current_val_loss - current_loss)
+    best_gap = abs(best_val_loss - best_loss)
 
-        return self.min_lr + (self.initial_lr - self.min_lr) * cosine_decay
+    allowed_gap = max(best_gap * gap_tolerance_ratio, min_gap_threshold)
 
-for epoch in range(20) :
-    cosine_callback = CosineAnnealingWarmRestarts(
-                initial_lr=0.00039,
-                min_lr=1e-5,
-                total_epochs=20,  # 1周期总轮数
-                warmup_epochs=1,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
-                warmup_power=2.0,
-                restart_epochs=[10])
-    # 不需要热身，直接衰减
-    res=cosine_callback.optimal_cosine_annealing(epoch)
-    print(f'epoch:{epoch}:{res}')
-
-for epoch in range(21) :
-    cosine_callback = CosineAnnealingWarmRestarts(
-                initial_lr=0.00039,
-                min_lr=1e-5,
-                total_epochs=20,  # 1周期总轮数
-                warmup_epochs=2,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
-                warmup_power=2.0,
-                restart_epochs=[10])
-    # 需要热身1轮后衰减
-    res2=cosine_callback.optimal_cosine_annealing(epoch)
-    print(f'epoch:{epoch}:{res2}')
+    if current_gap <= allowed_gap:
+        best_val_loss = current_val_loss
+        best_loss = current_loss
+        best_gap_recorded = current_gap
+        save_model()
+        print(
+            f"模型已保存 (Epoch {epoch}): Val Loss 显著下降且 Gap ({current_gap:.5f}) 在允许范围 ({allowed_gap:.5f}) 内")
+    else:
+        # ⚠️ 警惕：Loss 降了，但过拟合加剧太多，放弃保存
+        print(
+            f"跳过保存 (Epoch {epoch}): Val Loss 虽下降，但 Gap ({current_gap:.5f}) 超出允许范围 ({allowed_gap:.5f})，疑似过拟合。")
+else:
+    # Loss 没怎么降，直接跳过
+    pass

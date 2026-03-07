@@ -17,12 +17,13 @@ from sklearn.utils.validation import check_is_fitted
 from data.decorator import validate_input
 from models.cnn import MultiTasksCnnModel
 from models.lstm import SingleTaskLstmModel, MultiTasksLstmModel
-from training.training_models import TrainingMultiModel, TrainingSingleModel
+from training.training_models import TrainingSingleModel, TrainingMultiModel
 from data.windows import EnhancedWindowGenerator
 from evaluation.model_evaluation import ModelEvaluation
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 
 import tensorflow as tf
+
 random.seed(42)
 np.random.seed(42)
 tf.random.set_seed(42)
@@ -64,7 +65,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.forecast_window_gen_ = None
         self.train_window_gen_ = None
         self.forecast_window_config_ = None
-        self.stage_number_=-1
+        self.stage_number_ = -1
 
     def fit(self, X: dict, y=None):
         train_datasets = X['train_datasets']
@@ -94,18 +95,17 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         2. 直接加载已有模型：使用continue.py单独进行训练后的模型
         该位置需要保证：embedding_info_纳入
         """
-        final_best_model = self.model_config.get('final_best_model',None)
+        final_best_model = self.model_config.get('final_best_model', None)
 
         if final_best_model is None:
 
             # 1.3 训练
             continue_train = self.model_config.get('continue_from', None)
-            model_name = self.model_config.get('model_type','unknown')
-            multi_model = self.model_config.get('multi_tasks',False)
+            model_name = self.model_config.get('model_type', 'unknown')
+            multi_model = self.model_config.get('multi_tasks', False)
 
-
-            training_config = {'model_name': model_name, 'continue_from':continue_train,
-                               'trainset': train_window_data,'valset': val_window_data,
+            training_config = {'model_name': model_name, 'continue_from': continue_train,
+                               'trainset': train_window_data, 'valset': val_window_data,
                                'learning_rate': self.model_config['learning_rate'],
                                'cos_min_lr': self.model_config['cos_min_lr'],
                                'cos_total_epochs': self.model_config['cos_total_epochs'],
@@ -113,7 +113,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                                'total_epochs': self.model_config['total_epochs'],
                                'verbose': self.model_config['verbose'],
                                'early_stop_patience': self.model_config['early_stop_patience'],
-                               'monitor': self.model_config['monitor'], 'min_delta': self.model_config['min_delta']}
+                               'min_delta': self.model_config['min_delta']}
 
             if continue_train is None:
                 # 首次（构建模型）
@@ -130,19 +130,20 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                                              valset=val_window_data)
             else:
                 # 继续（直接加载）
-                basic_dir=None
+                basic_dir = None
                 match = re.search(r"(.*)tf_checkpoints_stage(\d+)", str(continue_train))
                 continue_training_dir = os.path.join(match.group(1), 'continue_training')
                 self.stage_number_ = int(match.group(2))
 
-            training_config.update({'basic_dir':basic_dir})
-
+            training_config.update({'basic_dir': basic_dir})
 
             # 1.3.1 多任务/单任务分支
             if multi_model:
 
                 if continue_train is not None:
-                    first_training_config_multi = {**training_config,'model':None}
+                    first_training_config_multi = {**training_config,
+                                                   'model': None,
+                                                   'monitor':self.model_config['monitor'] }
                 else:
                     if model_name.startswith('multi_lstm'):
                         model_config = {**self.model_config,
@@ -162,15 +163,18 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                     else:
                         raise ValueError(f"未支持的模型{model_name}")
 
-                    first_training_config_multi = {**training_config,'model': self.training_model_}
+                    first_training_config_multi = {**training_config,
+                                                   'model': self.training_model_,
+                                                   'monitor':self.model_config['monitor']}
 
-                self.history_, best_checkpoint_epoch = TrainingMultiModel(**first_training_config_multi)
+                train = TrainingMultiModel()
+                self.history_, best_checkpoint_epoch = train.training_model(**first_training_config_multi)
 
 
             # 1.3.2 单任务
             else:
                 if continue_train is not None:
-                    first_training_config_single = {**training_config,'model':None}
+                    first_training_config_single = {**training_config, 'model': None}
                 else:
                     if model_name.startswith('single_lstm'):
                         model_config = {**self.model_config,
@@ -181,10 +185,10 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                     else:
                         raise ValueError(f"未支持的模型{self.model_config['model_type']}")
 
-                    first_training_config_single = {**training_config,'model': self.training_model_}
+                    first_training_config_single = {**training_config, 'model': self.training_model_}
 
-                self.history_, best_checkpoint_epoch = TrainingSingleModel(**first_training_config_single)
-
+                train = TrainingSingleModel()
+                self.history_, best_checkpoint_epoch = train.training_model(**first_training_config_single)
 
             #  存每次训练的配置 + 训练历史
             self._save_model_config(continue_training_dir=continue_training_dir, stage_number=self.stage_number_)
@@ -242,14 +246,14 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
     def _save_model_config(self, continue_training_dir, stage_number):
         model_name = self.model_config['model_type']
-        saved_config_path = os.path.join(continue_training_dir, f'{model_name}_config_stage{stage_number+1}.cpkl')
+        saved_config_path = os.path.join(continue_training_dir, f'{model_name}_config_stage{stage_number + 1}.cpkl')
         with open(saved_config_path, 'wb') as f:
             cloudpickle.dump(self.model_config, f)
 
     def _save_training_history(self, history, continue_training_dir, stage_number):
         model_name = self.model_config.get('model_type', 'unknown')
-        history_path = os.path.join(continue_training_dir, f'{model_name}_history_stage{stage_number+1}.cpkl')
-        csv_path = os.path.join(continue_training_dir, f'{model_name}_history_stage{stage_number+1}.csv')
+        history_path = os.path.join(continue_training_dir, f'{model_name}_history_stage{stage_number + 1}.cpkl')
+        csv_path = os.path.join(continue_training_dir, f'{model_name}_history_stage{stage_number + 1}.csv')
         # history 是一个 Keras History 对象 不可以直接dump
         # history.history：字典 / history.params：字典（可序列化） / history.epoch：列表（可序列化） 其他不可序列化
 
@@ -259,7 +263,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             params = history.params if hasattr(history, 'params') else {}
         else:
             history_dict = history
-            epochs = list(range(1, len(next(iter(history_dict.values()))) ))
+            epochs = list(range(1, len(next(iter(history_dict.values())))))
             params = {}
 
         history_data = {
@@ -267,7 +271,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             'history': history_dict,
             'epochs': [int(e) for e in epochs],
             'params': params,
-            'stage': stage_number+1,
+            'stage': stage_number + 1,
             'save_time': datetime.datetime.now().isoformat()
         }
         with open(history_path, 'wb') as f:
@@ -277,7 +281,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         df.insert(0, 'epoch', epochs)
         df.to_csv(csv_path, index=False)
         logger.info(f"训练历史保存到: {csv_path}")
-        return history_path,csv_path
+        return history_path, csv_path
 
     def load_best_model(self):
 
@@ -286,11 +290,11 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         checkpoint_dir = self.best_checkpoint
         file_list = os.listdir(checkpoint_dir)
-        keras_files =[]
+        keras_files = []
 
         for file in file_list:
             if file.endswith('.keras'):
-                keras_file = os.path.join(checkpoint_dir,file)
+                keras_file = os.path.join(checkpoint_dir, file)
                 keras_files.append(keras_file)
 
         if keras_files:
@@ -362,8 +366,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         }
 
         return self.predict_window_gen, self.forecast_window_config_
-
-
 
     def _get_compile_config_for_save(self):
 

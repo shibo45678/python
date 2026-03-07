@@ -8,8 +8,9 @@
 # missing列logger 从提示改为报错 尽早暴露/结果无意义/
 # 统一下划线/标准化列有不存在需要提前验证
 # config.yaml
-# 线程内，实现窗口和模型拆分，再彻底分离首次训练和继续训练
-
+# 线程内，实现窗口和模型拆分，主要是继续训练需要避免再做一次预处理（线程不包括预处理，fit里面除了模型训练还有窗口数据形成， 尽量不要线程外保存一次，内再保存一次）
+# 多任务的LSTM未实现 注意力机制等 / cnn的单独训练
+# 测试集小(保证连续）可能会导致测试集的指标不好，因为回测的数据代表性不足，分布不一致等
 from utils.tensorflow_config import TensorFlowConfig
 import copy
 from concurrent.futures import ThreadPoolExecutor
@@ -75,7 +76,7 @@ def main():
         {'custom': {'columns': ['auto_handle_remain'], 'handle_method': ['ignore'], 'skip_handle': [],
                     'detect_function': partial(detector.recommend_detection_method)}}
     ],
-        'generate_outlier_indicator': ['T', 'rh'],
+        'generate_outlier_indicator': ['T'],
     }
 
     categorical_outliers_config = {
@@ -92,7 +93,7 @@ def main():
         ],
         'skip_fill': [],
         'smart_fill_remain': True,
-        'important_columns': ['T', 'rh'],
+        'important_columns': ['T'],
     }
 
     # 新特征生成后
@@ -106,7 +107,7 @@ def main():
             {'robust': {'columns': ['T', 'wv_y', 'max. wv_x', 'max. wv_y'], 'quantile_range': (25, 75)}}
         ],
         'skip_scale': ['is_night', 'hour_sin', 'hour_cos', 'day_of_year_cos', 'day_of_year_sin', 'Season_sin',
-                       'Season_cos']  # 跳过二分类列(数值型）/ 异常值标记列自动skip
+                       'Season_cos']  # 跳过二分类列(数值型）/ 异常值标记列 / missing标记
 
     }
 
@@ -197,90 +198,71 @@ def main():
     time_col = preprocessor.get_specific_attribute(2, 'engineer_1', 'valid_time_column_')
 
     # 4. 并行模型训练、评估
-    # single_base_model_config = {'numeric_columns': num_cols,
-    #                             'categorical_columns': cat_cols,
-    #                             'time_column': time_col,
-    #                             'input_width': 6,
-    #                             'output_width': 5,
-    #                             'shift': 4,
-    #                             'output_config': {
-    #                                 'T': {'type': 'regression',
-    #                                       'loss': 'mse',
-    #                                       'metrics': ['mae'],
-    #                                       'loss_weights': 1,
-    #                                       'units': 1,
-    #                                       }},
-    #
-    #
-    # single_lstm_model_config1 = {**single_base_model_config, **{
-    #     'model_type': 'single_lstm1',
-    #     'learning_rate': 0.00035,
-    #     'units': [192],  # len控制lstm的层数
-    #     'return_sequences': [False],
-    #     'epochs': 30,
-    #     'verbose': 2
-    # }}
+    base_lstm_model_config = {'numeric_columns': num_cols,
+                              'categorical_columns': cat_cols,
+                              'time_column': time_col,
+                              'input_width': 6,
+                              'output_width': 5,
+                              'shift': 24,
 
-    multi_base_model_config = {'numeric_columns': num_cols,
-                               'categorical_columns': cat_cols,
-                               'time_column': time_col,
-                               'input_width': 6,
-                               'output_width': 5,
-                               'shift': 24,
+                              'units': [256],  # len控制lstm的层数
+                              'return_sequences': [False],
+                              'verbose': 2,
+                              'total_epochs': 50,
+                              'early_stop_patience': 10,
+                              'min_delta': 1e-6,
+                              'learning_rate': 0.00035,
+                              'cos_min_lr': 1e-6,
+                              'cos_total_epochs': 25,
+                              'cos_warmup_epochs': 5,
+                              # 'reduce_lr_patience': 3,
+                              }
 
-                               'multi_tasks': True,
-                               'output_config': {
-                                   'T': {'type': 'regression',  # 单变量回归
-                                         'loss': 'mse',  # 主损失函数
-                                         'metrics': ['mae'],  # 额外指标：平均绝对误差
-                                         'loss_weights': 0.6,
-                                         'units': 1,  # 每个时间步预测n个特征
-                                         },
+    single_lstm_model_config1 = {**base_lstm_model_config, **{
+        # 集中切换: 单/多任务 and 继续训练
+        'model_type': 'single_lstm1',  # 数字代表LSTM层数(包括：公共层和模型.py的专用LSTM）
+        'multi_tasks': False,
+        'output_config': {
+            'T': {'type': 'regression',
+                  'loss': 'mse',
+                  'metrics': ['mae'],
+                  'loss_weights': 1,
+                  'units': 1,
+                  }},
+        # 直接main.py文件继续训练（至stage)
+        'continue_from': None,
+        # '/Users/shibo/Python/NeuralNetwork/saved_model/single_lstm1_20260306_114256/tf_checkpoints_stage0',
 
-                                   'rh': {'type': 'regression',
-                                          'loss': 'mse',
-                                          'metrics': ['mae'],
-                                          'loss_weights': 0.4,
-                                          'units': 1,
-                                          }
-                               },
-
-                               }
-
-    # multi_lstm_model_config1 = {**multi_base_model_config, **{
-    #     'model_type': 'multi_lstm1',
-    #     'learning_rate': 0.00035,
-    #     'units': [192],  # len控制lstm的层数
-    #     'return_sequences': [False],
-    #     'early_stop_patience' : 5,
-    #     'min_delta': 1e-6,
-    #     'monitor': 'val_T_loss',
-    #     'total_epochs': 50,
-    #     'verbose': 2,
-    # }}
-
-    multi_lstm_model_config2 = {**multi_base_model_config, **{
-        'model_type': 'multi_lstm2*',
-        'total_epochs': 50,
-        'units': [256],  # 2:1
-        'return_sequences': [True],  # 上一轮的输出做本轮输入input + 上一轮输出
-        'early_stop_patience': 5,
-        'min_delta': 1e-6,
-        'monitor': 'val_T_loss',
-        'verbose': 2,
-
-        # 首次训练配置：continue_from：None / 注意余弦配置
-        'continue_from':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_233439/tf_checkpoints_stage0',
-        'cos_min_lr': 1e-5,
-        'learning_rate': 0.00039,
-        'cos_total_epochs': 20,
-        'cos_warmup_epochs': 1,  # 3代表进行2轮预测
-        # 'reduce_lr_patience': 3,
-
-        # 使用main.py继续训练（None)
-        # 直接从continue_training.py加载训练完的最佳模型(带epoch的path)
-        'final_best_model':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
+        # continue_training.py文件的继续训练结果（至epoch)
+        'final_best_model': None,
+        # '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
     }}
+
+    # multi_lstm_model_config2 = {**base_lstm_model_config, **{
+    #     'model_type': 'multi_lstm2*',  # 数字代表LSTM层数(包括：公共层和模型.py的专用LSTM）
+    #     'multi_tasks': True,
+    #     'monitor': 'T', # 多任务指定某任务的监控，或者None，默认监控总val_loss和val_mae
+    #     'output_config': {
+    #         'T': {'type': 'regression',  # 单变量回归
+    #               'loss': 'mse',  # 主损失函数
+    #               'metrics': ['mae'],  # 额外指标：平均绝对误差
+    #               'loss_weights': 0.6,
+    #               'units': 1,  # 每个时间步预测n个特征
+    #               },
+    #
+    #         'rh': {'type': 'regression',
+    #                'loss': 'mse',
+    #                'metrics': ['mae'],
+    #                'loss_weights': 0.4,
+    #                'units': 1}},
+    #
+    #     # 首次训练配置：continue_from：None / 注意余弦配置
+    #     'continue_from': '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_233439/tf_checkpoints_stage0',
+    #
+    #     # 使用main.py继续训练（None)
+    #     # 直接从continue_training.py加载训练完的最佳模型(带epoch的path)
+    #     'final_best_model': '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
+    # }}
 
     data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
 
@@ -423,7 +405,7 @@ def main():
                 'config': config
             }
 
-    configs = [multi_lstm_model_config2]  # multi_cnn_model_config
+    configs = [single_lstm_model_config1]  # multi_lstm_model_config2
 
     failed_configs = []
     trained_models = []

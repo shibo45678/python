@@ -1,4 +1,6 @@
-from utils.tensorflow_config import  TensorFlowConfig
+from typing import Union
+
+from utils.tensorflow_config import TensorFlowConfig
 import tensorflow as tf
 import re
 import cloudpickle
@@ -8,7 +10,7 @@ import logging
 from datetime import datetime
 
 from models import MultiTasksLstmModel, MultiTasksCnnModel, SingleTaskLstmModel
-from training.training_models import CustomCheckpointCallback, CosineAnnealingWarmRestarts,  \
+from training.training_models import CustomCheckpointCallback, CosineAnnealingWarmRestarts, \
     ContinueCosineAnnealing
 
 logging.basicConfig(level=logging.DEBUG)
@@ -19,19 +21,23 @@ def continue_training(
         pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260304_092539',
         checkpoint_dir: str = 'tf_checkpoints_stage1',
         continue_inner_epoch=None,
-        update_lr='custom',
+        update_lr: Union[str, float] = 'from_history',
         cos_min_lr=1e-5,
         cos_total_epochs=20,
         cos_warmup_epochs=1,
         save_model_dir=None,  # 带stage
-        monitor='val_T_loss',
+        total_epochs=50,
+        early_stop_patience=5,
+        min_delta=1e-6,
+        monitor='val_loss',
         verbose=2
+
 ):
     """
     Args:
         pre_path: 之前保存的预训练的数据和历史 部分材料， ？后续可自动搜索tf_checkpoints/epoch/keras文件
         continue_inner_epoch:从多少轮开始继续训练（不写可推，与文件夹名一致，epoch从0计数）
-        update_lr = 'from_history'(从预训练结果获得）/ 'fixed'（根据轮次 固定学习率）/custom 0.00039
+        update_lr = 'from_history'(从预训练结果获得）/ 'fixed'（根据轮次 固定学习率）/ 直接自定义值 0.00039
         save_model_dir = 保存新训练模型地址（不填默认在同目录下的加载配置的stage后面一个）
         cos_warmup_epochs:1代表热启动0轮，不预热直接进行衰减
         monitor:监控指标
@@ -50,10 +56,6 @@ def continue_training(
         raise FileNotFoundError(f"配置文件不存在: {config_file}")
     with open(config_file, 'rb') as f:
         config = cloudpickle.load(f)
-
-    total_epochs = config.get('total_epochs', 50)
-    early_patience = config.get('early_stop_patience', 5)
-    min_delta = config.get('min_delta', 1e-6)
 
     # 1. 加载预处理数据
     train_save_path = os.path.join(continue_dir, f'{model_name}_preprocessed_data/train_dataset')
@@ -134,7 +136,7 @@ def continue_training(
         cos_total_epochs=cos_total_epochs,
         cos_warmup_epochs=cos_warmup_epochs,
         min_delta=min_delta,
-        early_patience=early_patience,
+        early_stop_patience=early_stop_patience,
     )
 
     # 8. 继续训练
@@ -237,32 +239,31 @@ def get_initial_learning_rate(continue_inner_epoch, dir, model_name, stage_numbe
         dir : continue_dir = '/Users/shibo/Python/NeuralNetwork/lstm..../continue_training'
         method= 'from_history' / 'fixed '固定
     """
-
-    if method == 'from_history':
-        history_data = get_training_history(save_dir=dir, stage=stage_number, model_name=model_name)
-        history_dict = history_data.get('history', None)
-        lr_column = ['learning_rate', 'lr', 'LR', 'LearningRate']
-        for col in lr_column:
-            if col in history_dict and len(history_dict[col]) > continue_inner_epoch:  # 内部
-                return history_dict[col][continue_inner_epoch]  # 列表
-
-    elif method == 'fixed':
-        if continue_inner_epoch <= 38:
-            return 2.5e-05
-        elif continue_inner_epoch <= 43:
-            return 2.0e-05
-        elif continue_inner_epoch <= 48:
-            return 1.2e-05
-        else:
-            return 8e-05
-
-    elif method == 'custom':
-        logger.debug(f'训练初始学习率获得方式{method},使用默认值 0.00039')
-        return 0.00039
+    if type(method) == float:
+        logger.debug(f'训练初始学习率获得方式:自定义数值{method}')
+        return method
 
     else:
-        logger.warning(f'未知继续训练初始学习率获得方式{method},使用默认值 1e-5')
-        return 1e-5
+        if method == 'from_history':
+            history_data = get_training_history(save_dir=dir, stage=stage_number, model_name=model_name)
+            history_dict = history_data.get('history', None)
+            lr_column = ['learning_rate', 'lr', 'LR', 'LearningRate']
+            for col in lr_column:
+                if col in history_dict and len(history_dict[col]) > continue_inner_epoch:  # 内部
+                    return history_dict[col][continue_inner_epoch]  # 列表
+
+        elif method == 'fixed':
+            if continue_inner_epoch <= 38:
+                return 2.5e-05
+            elif continue_inner_epoch <= 43:
+                return 2.0e-05
+            elif continue_inner_epoch <= 48:
+                return 1.2e-05
+            else:
+                return 8e-05
+        else:
+            logger.warning(f'未知继续训练初始学习率获得方式{method},使用默认值 1e-5')
+            return 1e-5
 
 
 def combine_training_history(new_history, continue_inner_epoch, pre_stage, model_name, save_dir):
@@ -360,15 +361,16 @@ def get_training_history(save_dir, model_name, stage):
         return history_data
 
 
-def get_continue_callbacks(checkpoint_model_dir, initial_epoch, metric, stage_number, target_lr, cos_min_lr,cos_total_epochs, cos_warmup_epochs,min_delta,
-                           early_patience):
+def get_continue_callbacks(checkpoint_model_dir, initial_epoch, metric, stage_number, target_lr, cos_min_lr,
+                           cos_total_epochs, cos_warmup_epochs, min_delta,
+                           early_stop_patience):
     callbacks = []
 
     # 1. ModelCheckpoint - 保存最佳模型
     checkpoint_callback = CustomCheckpointCallback(checkpoint_dir=checkpoint_model_dir,
                                                    stage_number=stage_number,
                                                    initial_epoch=initial_epoch,
-                                                   metric=metric, min_delta=min_delta, patience=early_patience)
+                                                   metric=metric, min_delta=min_delta, patience=early_stop_patience)
 
     callbacks.append(checkpoint_callback)
 
@@ -377,7 +379,7 @@ def get_continue_callbacks(checkpoint_model_dir, initial_epoch, metric, stage_nu
         cosine_callback = CosineAnnealingWarmRestarts(
             initial_lr=target_lr,
             min_lr=cos_min_lr,
-            total_epochs=cos_total_epochs, # 1周期总轮数
+            total_epochs=cos_total_epochs,  # 1周期总轮数
             warmup_epochs=cos_warmup_epochs,  # 4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
             warmup_power=2.0,
             restart_epochs=None)
@@ -439,16 +441,20 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     model, _, _, save_model_dir, new_history = continue_training(
-        pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745',
+        pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/single_lstm1_20260306_115705',
         checkpoint_dir='tf_checkpoints_stage0',
         continue_inner_epoch=None,
         save_model_dir=None,  # 带stage
-        update_lr='custom',
+        update_lr=0.00035,  # float: 0.00035/ str : 'from_history'
+        early_stop_patience=5,
+        min_delta=1e-6,
+        total_epochs=50,
         cos_min_lr=1e-5,
         cos_total_epochs=20,
-        cos_warmup_epochs=1,
-        monitor='val_T_loss',
-        verbose=2
+        cos_warmup_epochs=3,
+        monitor='val_loss',
+        verbose=2,
+
     )
     print(f"\n训练完成！相关信息保存在: {save_model_dir}")
     print(f"最终验证损失: {new_history.history['val_loss'][-1]:.4f}")
