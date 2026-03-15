@@ -26,7 +26,7 @@ from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, D
                                    ColumnsTypeIdentify,
                                    ConvertCategoricalColumns,
                                    ConvertNumericColumns, ProcessTimeseriesColumns, ProcessContinuous,
-                                   StatisticsOutlierDetector, RemoveMissingHandler)
+                                   StatisticsOutlierDetector, RemoveNanHandler)
 from data.data_preprocessing import SimpleTimeSampler
 from data.feature_engineering import (WeatherGenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
                                       UnifiedFeatureScaler, CategoricalEncoding, OrdinalCategoricalEncoder,
@@ -106,7 +106,7 @@ def main():
             {'minmax': {'columns': [], 'feature_range': (-1, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
             {'robust': {'columns': ['T', 'wv_y', 'max. wv_x', 'max. wv_y'], 'quantile_range': (25, 75)}}
         ],
-        'skip_scale': ['is_night', 'hour_sin', 'hour_cos', 'day_of_year_cos', 'day_of_year_sin', 'Season_sin',
+        'skip_scale': ['is_night', 'is_cold_front','hour_sin', 'hour_cos', 'day_of_year_cos', 'day_of_year_sin', 'Season_sin',
                        'Season_cos']  # 跳过二分类列(数值型）/ 异常值标记列 / missing标记
 
     }
@@ -133,13 +133,14 @@ def main():
         {'obj_list': [SimpleTimeSampler(time_column='Date Time', freq_hours=1, minute=0, second=0)],
          'len_change': True},
 
-        {'obj_list': [WeatherGenerationFromNumeric(selected_columns=['wd', 'wv', 'max. wv', 'Tdew', 'T', 'rh'],
-                                                   create_statistical=True)], 'len_change': False},
-
-        {'obj_list': [RemoveMissingHandler(pass_through=False)], 'len_change': True},
-
         {'obj_list': [GenerationFromTimeseries(time_column='Date Time', plot=False),
-                      BasedOnCorrSelector(pass_through=True),
+                      WeatherGenerationFromNumeric(selected_columns=['wd', 'wv', 'max. wv', 'T', 'rh', 'Tdew'],
+                                                   create_statistical=True, create_interactions=True)],
+         'len_change': False},
+
+        {'obj_list': [RemoveNanHandler(pass_through=False)], 'len_change': True},
+
+        {'obj_list': [BasedOnCorrSelector(pass_through=True),
                       CustomTransformer(model_name='lstm', pass_through=False,
                                         power_columns=['rh', 'wv_y', 'max. wv_y'],
                                         power_method='yeo-johnson', power_standardize=False,
@@ -172,29 +173,11 @@ def main():
     preprocessor = CompletePreprocessor(preparation_configs)
     features_temp_train, _ = preprocessor.train(features=df_train, labels=None)
 
-    # # 立即检查状态
-    # logger.debug("=== 训练后立即检查 ===")
-    # for name, pipeline in preprocessor.pipelines_.items():
-    #     logger.debug(f"{name}:")
-    #     try:
-    #         check_is_fitted(pipeline)
-    #         logger.debug("  ✓ Pipeline 整体已拟合")
-    #     except Exception as e:
-    #         logger.debug(f"  ✗ Pipeline 整体未拟合: {e}")
-    #
-    #     # 检查每个步骤
-    #     for step_name, transformer in pipeline.steps:
-    #         try:
-    #             check_is_fitted(transformer)
-    #             logger.debug(f"    ✓ {step_name} 已拟合")
-    #         except Exception as e:
-    #             logger.debug(f"    ✗ {step_name} 未拟合: {e}")
-
     features_temp_val, _ = preprocessor.transform_predict(features=df_val, labels=None)
     features_temp_test, _ = preprocessor.transform_predict(features=df_test_adjust, labels=None)
 
-    num_cols = preprocessor.get_specific_attribute(6, 'engineer_3', 'numeric_columns_')  # 取第7个class的第4步的属性
-    cat_cols = preprocessor.get_specific_attribute(6, 'engineer_4', 'categorical_columns_')
+    num_cols = preprocessor.get_specific_attribute(6, 'engineer_2', 'numeric_columns_')  # 取第7个class的第4步的属性
+    cat_cols = preprocessor.get_specific_attribute(6, 'engineer_3', 'categorical_columns_')
     time_col = preprocessor.get_specific_attribute(2, 'engineer_1', 'valid_time_column_')
 
     # 4. 并行模型训练、评估
@@ -204,17 +187,26 @@ def main():
                               'input_width': 6,
                               'output_width': 5,
                               'shift': 24,
+                              'batch_size': 16,
 
                               'units': [256],  # len控制lstm的层数
                               'return_sequences': [False],
                               'verbose': 2,
-                              'total_epochs': 50,
+                              'total_epochs':1,
+
                               'early_stop_patience': 10,
-                              'min_delta': 1e-6,
-                              'learning_rate': 0.00035,
+                              'check_save_mode': 2,
+                              'gap_tolerance_ratio': 1.07,
+                              'min_gap_threshold': 0.002,
+
+                              'min_delta': 1e-4,
+                              'learning_rate': 0.0003,
                               'cos_min_lr': 1e-6,
                               'cos_total_epochs': 25,
-                              'cos_warmup_epochs': 5,
+                              'cos_warmup_epochs': 5, # 首次训练支持restart
+
+                              'weight_decay': 1e-5,
+                              'clipnorm': 10,  # 首次fit前先诊断 只拦截 >10.0 的异常尖峰
                               # 'reduce_lr_patience': 3,
                               }
 
@@ -264,14 +256,15 @@ def main():
     #     'final_best_model': '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
     # }}
 
-    data = {'train_datasets': features_temp_train, 'val_datasets': features_temp_val}  # 训练要求验证集
+    data = {'train_data': features_temp_train, 'val_data': features_temp_val}  # 训练要求验证集
 
     # 准备指标计算数据（回测用，预测不用） 采样后的原数据
     valid_df_test, _ = preprocessor._get_step(3, 0).process(df_test_adjust)  # 处理连续性测试集的采样步骤（第4个class,第0个实例) 采样
 
     # 并行训练和预测
-    def train_single_config(config, X, y, preprocessor, data,
-                            save_dir=None, calc_metrics=True, original_data_no_scaled=None, original_data_scaled=None):
+    def train_single_config(config, X, y, preprocessor,
+                            save_dir=None, calc_metrics=True, original_data_no_scaled=None, original_data_scaled=None,
+                           ):
         """
         单个模型的训练和预测流程
 
@@ -282,7 +275,7 @@ def main():
             preprocessor: 预处理器对象,提取逆转换pipeline步骤
             save_dir: 保存目录，如果为None则不保存
             original_data_no_scaled : 测试集计算指标 的原数（mape:时间列采样/连续性处理）
-            original_data_scaled:测试集计算指标 的原数据（mae,mse:时间列采样/连续性处理/标准化）
+            original_data_scaled: 测试数据，计算指标 的原数据（mae,mse:时间列采样/连续性处理/标准化）
 
         Returns:
             dict: 包含模型、预测结果和postprocessor
@@ -315,10 +308,11 @@ def main():
             postprocessor.capture_and_save_pipeline_state()
 
             # 4. 预测
-            features_temp_data_copy = copy.deepcopy(data)
-            raw_predictions = estimator.predict(features_temp_data_copy)  # 测试数据
+            features_temp_test_data_copy = copy.deepcopy(original_data_scaled)
+            raw_predictions = estimator.predict(features_temp_test_data_copy)  # 测试数据
             logger.info(
                 f"测试集生成 {len(raw_predictions)} 个预测结果，每个结果代表一个预测label，形状：shape:{raw_predictions[list(config.get('output_config').keys())[0]].shape}")
+
 
             # 5. 逆标准化/编码（使用后处理器）预测数据 + 原始数据（用于训练的数值列里面的2分类列，未标准化，需要排除掉）
             inverse_predictions = postprocessor.custom_inverse_transform(
@@ -333,7 +327,7 @@ def main():
             # 6. 添加时间戳
             final_pred_results, predictions_dict = postprocessor.add_timestamps(
                 predictions=inverse_predictions,
-                historical_timestamps=features_temp_data_copy[time_column],
+                historical_timestamps=features_temp_test_data_copy[time_column],
                 input_width=config.get('input_width', 6),
                 output_width=config.get('output_width', 5),
                 freq='h',
@@ -361,7 +355,7 @@ def main():
                                                               time_column=config.get('time_column', 'Date Time'))
 
                 mae_mse_dict = MetricsCalculator.mae_mse_calculator(predictions=raw_predictions,  # 注意是标准化数据
-                                                                    actual_data=original_data_scaled.copy(),  # 标准化原数据
+                                                                    actual_data=features_temp_test_data_copy.copy(),  # 标准化原数据
                                                                     input_width=config.get('input_width'),
                                                                     shift=config.get('shift'), level='o',
                                                                     time_column=config.get('time_column', 'Date Time'))
@@ -411,10 +405,11 @@ def main():
     trained_models = []
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(train_single_config, config, X=data, y=None, preprocessor=preprocessor,
-                                   data=features_temp_test,  # 预处理后的测试集数据
-                                   original_data_no_scaled=valid_df_test,  # 预处理前的测试集数据（时间列处理，采样）
+                                   # data=features_temp_test,  # 预处理后的 测试集数据
                                    original_data_scaled=features_temp_test,  # 预处理后的测试集数据（时间列处理，采样，标准化）
-                                   save_dir='/Users/shibo/Python/NeuralNetwork/saved_model_state')
+                                   original_data_no_scaled=valid_df_test,  # 预处理前的测试集数据（时间列处理，采样）
+                                   save_dir='/Users/shibo/Python/NeuralNetwork/saved_model_state',
+                                   )
                    for config in configs]
 
         for future, config in zip(futures, configs):

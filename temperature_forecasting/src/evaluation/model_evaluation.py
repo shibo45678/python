@@ -35,26 +35,12 @@ class ModelEvaluation:
 
         data_analysis = self._detailed_multi_task_evaluation(model, dataset, dataset_type)
 
-        self._print_summary_report(task_metrics, dataset_type)
-
         return {
             'model_name': self.model_name,
             'task_metrics': task_metrics,  # 基础指标
             'dataset_analysis': data_analysis,  # 详细分析
         }
 
-    def _print_summary_report(self, task_metrics: Dict, dataset_type: str):
-        logger.debug("\n" + "=" * 60)
-        logger.debug(f"{self.model_name} - 评估汇总报告")
-        logger.debug("=" * 60)
-
-        for task_name, metrics in task_metrics.items():
-            task_type = metrics['type']
-            if task_type == 'regression':
-                logger.debug(f"{task_name}: MAE = {metrics[f'{dataset_type}_mae']:.4f}")
-            else:
-                logger.debug(
-                    f"{task_name}: Accuracy={metrics[f'{dataset_type}_accuracy']:.4f}")
 
     def _evaluate_multi_task_model(self, model, window, dataset, dataset_type) -> Dict:
         """混合分类和回归"""
@@ -78,24 +64,27 @@ class ModelEvaluation:
 
         # 为每个任务单独计算指标
         task_metrics = {}
+        task_num = len(self.output_configs.keys())
         for task_name, config in self.output_configs.items():
             task_type = config['type']
 
             logger.debug(f"--- 任务: {task_name} ({task_type}) ---")
-            data_loss = data_metrics.get(f'{task_name}_loss', 0)
+            metric_name1 = 'loss' if task_num == 1 else f'{task_name}_loss'
+            data_loss = data_metrics.get(metric_name1, 0)
+            logger.debug(f"{task_name} - 整体{dataset_type}-{metric_name1}: {data_loss:.4f}")
 
             if task_type == 'regression':
-                data_metric = data_metrics.get(f'{task_name}_mae', 0)
-                metric_name = 'mae'
+                metric_name2 = 'mae' if task_num == 1 else f'{task_name}_mae'
+                data_metric = data_metrics.get(metric_name2, 0)
             else:  # binary_classification + 多分类
-                data_metric = data_metrics.get(f'{task_name}_accuracy', 0)
-                metric_name = 'accuracy'
-            logger.debug(f"{task_name} - 整体{dataset_type}-{metric_name}: {data_metric:.4f}")
+                metric_name2 = 'accuracy' if task_num == 1 else f'{task_name}_accuracy'
+                data_metric = data_metrics.get(metric_name2, 0)
+            logger.debug(f"{task_name} - 整体{dataset_type}-{metric_name2}: {data_metric:.4f}")
 
             # 存储任务指标
             task_metrics[task_name] = {
-                f'{dataset_type}_loss': data_loss,
-                f'{dataset_type}_{metric_name}': data_metric,
+                f'{dataset_type}_{metric_name1}': data_loss,
+                f'{dataset_type}_{metric_name2}': data_metric,
                 'type': task_type
             }
 

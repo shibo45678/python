@@ -1937,6 +1937,7 @@ for root, dirs, files in os.walk(checkpoint_path):
 
 import math
 import tensorflow as tf
+
 # def optimal_cosine_annealing_with_start( epoch,warmup_epochs,total_epochs,initial_lr,min_lr,warmup_power,start_epoch=23):
 #     """支持从中间epoch开始的余弦退火"""
 #
@@ -2068,53 +2069,201 @@ import tensorflow as tf
 #     res2=cosine_callback.optimal_cosine_annealing(epoch)
 #     print(f'epoch:{epoch}:{res2}')
 #
+#
+#
+# def cal_metric(min_delta, current_val_loss, current_loss):
+#     best_val_loss = 0.060108
+#     best_loss = 0.05865
+#
+#     if current_val_loss < best_val_loss - min_delta:
+#         current_gap_abs = abs(current_val_loss - current_loss)
+#         best_gap_abs = abs(best_val_loss - best_loss)  # 需要记录最佳时的训练损失
+#         if current_gap_abs <= best_gap_abs * 1.1:  # 允许绝对差距小幅增大
+#             best_val = current_val
+#             best_train_loss = train_loss
+#             save_model()
+#             return '可更新'
+#         else:
+#             return '不能更新'
+#
+#
+# min_delta = 1e-6
+#
+# current_val_loss = 0.060082
+# current_loss = 0.05845
+# print(cal_metric(min_delta, current_val_loss, current_loss))
+#
+# # 参数设置
+# min_delta = 1e-6  # 建议设大一点，忽略噪声
+# gap_tolerance_ratio = 1.1  # 允许 Gap 增大 10%
+# min_gap_threshold = 0.001  # 防止过程中的 Gap 过小： 0*1.1=0 导致的误杀 (根据量级调整) ，同时也不能太小
+#
+# if current_val_loss < best_val_loss - min_delta:
+#     current_gap = abs(current_val_loss - current_loss)
+#     best_gap = abs(best_val_loss - best_loss)
+#
+#     allowed_gap = max(best_gap * gap_tolerance_ratio, min_gap_threshold)
+#
+#     if current_gap <= allowed_gap:
+#         best_val_loss = current_val_loss
+#         best_loss = current_loss
+#         best_gap_recorded = current_gap
+#         save_model()
+#         print(
+#             f"模型已保存 (Epoch {epoch}): Val Loss 显著下降且 Gap ({current_gap:.5f}) 在允许范围 ({allowed_gap:.5f}) 内")
+#     else:
+#         # ⚠️ 警惕：Loss 降了，但过拟合加剧太多，放弃保存
+#         print(
+#             f"跳过保存 (Epoch {epoch}): Val Loss 虽下降，但 Gap ({current_gap:.5f}) 超出允许范围 ({allowed_gap:.5f})，疑似过拟合。")
+# else:
+#     # Loss 没怎么降，直接跳过
+#     pass
+#
+# # import pandas as pd
+# # import numpy as np
+# #
+# #
+# #
+# # s1 = pd.Series([True, np.nan])
+# # s2 = pd.Series([True, np.nan])
+# # print(s1 & s2)
+# # 实际输出：0     True, 1    False
+#
+#
+# names = ['Slide', 'dds', 'sss']
+# ages = [23, 45, 66]
+# scores = [34, 66, 77]
+# paired = list(zip(names, ages, scores))
+# print(sorted(zip(ages, names)))  #
+#
+# dict1 = {1: 'a', 2: 'b'}
+# dict2 = {1: 'c', 2: 'd'}
+# a = zip(dict1.keys(), dict1.values(), dict2.values())
+# print(list(a))
+#
+# """内置函数"""
+#
+#
+# # 1. map(function,iterable)
+# # 多参数形式:每一个参数（iterable1, iterable2 等）都是独立的可迭代对象，而不是把所有参数打包成一个大的可迭代对象。
+#
+# def calculate_total(price, quantity, tax_rate):
+#     return price * quantity * (1 + tax_rate)
+#
+#
+# price = [10, 20, 30]
+# quantity = [2, 4, 3]
+# tax_rate = [0.1, 0.2, 0.4]
+#
+# totals = map(calculate_total, price, quantity, tax_rate)
+# print(list(totals))  # [22.0, 96.0, 125.99999999999999]
+#
+# # 2.  filter(function,iterable)
+# # 单参数形式:它只关心每个元素本身，不需要组合多个来源
+# a = filter(lambda x: x.isdigit(), ['a', '1', '2'])
+# print(list(a))  # ['1', '2']
+#
+# """functools"""
+# # 3. functools.reduce(function, iterable[, initializer])
+# from functools import reduce
+#
+# b = reduce(lambda x, y: x * y, [1, 2, 3, 4])
+# print(b)  # 24
+#
+# # functools.partial(func,/,*args,**keywords) ?
+# from functools import partial
+#
+# base_two = partial(int, base=2)
+# print(base_two('1001'))  # 9
+#
+# # 筛选score>30的name
+# names = ['a', 'b', 'sa']
+# scores = [29, 39, 20]
+# # 1
+# print([(n, s) for n, s in zip(names, scores) if s > 30])
+# # 2
+# print(list(filter(lambda s: s[1] > 30, [(n, s) for n, s in zip(names, scores)])))
+# # 3 直接用zip传元组，不用for遍历出来，不然这个filter的作用体现不大
+# print(list(filter(lambda t: t[1] > 30, zip(names, scores))))
+#
+# # 筛选出价格低于50元有存量的产品
+# products = ['T-shirt', 'Jeans', 'Shoes', 'Hat']
+# price = [29.9, 89.9, 120.5, 15.0]
+# stocks = [10, 5, 0, 20]
+#
+# # 列表推导式
+# list1 = [(pro_name, price, stocks) for pro_name, price, stocks in zip(products, price, stocks) if
+#          price < 50 and stocks > 0]
+# print(list1)
+#
+# # filter
+# print(list(filter(lambda x: x[1] < 50 and x[2] > 0, zip(products, price, stocks))))
 
+# defaultdict
+# {'fruit':['apple','banana']}
+# 与collections
+#
+# from collections import defaultdict,Counter
+#
+# cat = defaultdict(list)  # list别丢
+# data = [('apple', 'fruit'), ('carrot', 'vegetable'), ('banana', 'fruit'), ('potato', 'vegetable')]
+#
+# # for item in data:
+# #     cat[item[1]].append(item[0]) # 不是=右边cat.append
+# # print(cat) # defaultdict(<class 'list'>, {'fruit': ['apple', 'banana'], 'vegetable': ['carrot', 'potato']})
+#
+# for item,category in data:
+#     cat[category].append(item)
+# print(cat)
+#
+# # 1. 获得水果类的计数 Counter({'apple':1,'banana':1})
+# print(Counter(cat.get('fruit'))) # default 正常字典取
+#
+# print(cat.values()) # dict_values([['apple', 'banana'], ['carrot', 'potato']])
+# # # 错 print(Counter(cat.values())) # TypeError: unhashable type: 'list'
+#
+# # 2. 获得所有分类的打乱计数
+# from itertools import chain
+# all_items = chain.from_iterable(cat.values())
+# print(list(all_items))  # ['apple', 'banana', 'carrot', 'potato']
+# print(*all_items) # apple banana carrot potato （元素之间用空格分隔）
+# print(Counter(all_items)) # Counter({'apple': 1, 'banana': 1, 'carrot': 1, 'potato': 1})
+#
+#
+# # zip 解包元组的效果
+data = [('apple', 'fruit'), ('carrot', 'vegetable'), ('banana', 'fruit'), ('potato', 'vegetable')]
+print(*data) # ('apple', 'fruit') ('carrot', 'vegetable') ('banana', 'fruit') ('potato', 'vegetable')
+print(list(zip(*data))) # [('apple', 'carrot', 'banana', 'potato'), ('fruit', 'vegetable', 'fruit', 'vegetable')]
 
-def cal_metric(min_delta,current_val_loss,current_loss):
-    best_val_loss =0.060108
-    best_loss =0.05865
+names,categories =zip(*data)
+print(names) # ('apple', 'carrot', 'banana', 'potato')
 
-    if current_val_loss < best_val_loss - min_delta:
-        current_gap_abs = abs(current_val_loss - current_loss)
-        best_gap_abs = abs(best_val_loss - best_loss)   # 需要记录最佳时的训练损失
-        if current_gap_abs <= best_gap_abs * 1.1:        # 允许绝对差距小幅增大
-            best_val = current_val
-            best_train_loss = train_loss
-            save_model()
-            return '可更新'
-        else:
-            return '不能更新'
+# 统计所有项出现次数 Counter({'apple': 1, 'carrot': 1, 'banana': 1, 'potato': 1})
+count_all = Counter(names)
+print(count_all)
+#
+print(*[1,2,3])  # 1 2 3
+#
+# import pandas as pd
+# feat_dict = {'H2OC':0.2,'season':0.3}
+# df = pd.DataFrame(feat_dict,index =[0])
+# print(df)
+#
+# df1= df.sort_values(0,axis =1,ascending=False) # 对0这行进行列的排序
+# print(df1)
+#
+# df_t = df1.transpose()
+# print('\n',df_t)
+# print(df_t.index)
+#
+# # 或者不直接将dict直接变成df
+# importance_df = pd.DataFrame({
+#     'feature': list(feat_dict.keys()),
+#     'importance': list(feat_dict.values())
+# })
+# importance_sorted = importance_df.sort_values('importance', ascending=False)
+#
 
+list = ['a','d',1,2]
+print(list.index('a')) # 0
 
-min_delta = 1e-6
-
-
-current_val_loss =0.060082
-current_loss = 0.05845
-print(cal_metric(min_delta,current_val_loss,current_loss))
-
-# 参数设置
-min_delta = 1e-6  # 建议设大一点，忽略噪声
-gap_tolerance_ratio = 1.1  # 允许 Gap 增大 10%
-min_gap_threshold = 0.001   # 防止过程中的 Gap 过小： 0*1.1=0 导致的误杀 (根据量级调整) ，同时也不能太小
-
-if current_val_loss < best_val_loss - min_delta:
-    current_gap = abs(current_val_loss - current_loss)
-    best_gap = abs(best_val_loss - best_loss)
-
-    allowed_gap = max(best_gap * gap_tolerance_ratio, min_gap_threshold)
-
-    if current_gap <= allowed_gap:
-        best_val_loss = current_val_loss
-        best_loss = current_loss
-        best_gap_recorded = current_gap
-        save_model()
-        print(
-            f"模型已保存 (Epoch {epoch}): Val Loss 显著下降且 Gap ({current_gap:.5f}) 在允许范围 ({allowed_gap:.5f}) 内")
-    else:
-        # ⚠️ 警惕：Loss 降了，但过拟合加剧太多，放弃保存
-        print(
-            f"跳过保存 (Epoch {epoch}): Val Loss 虽下降，但 Gap ({current_gap:.5f}) 超出允许范围 ({allowed_gap:.5f})，疑似过拟合。")
-else:
-    # Loss 没怎么降，直接跳过
-    pass

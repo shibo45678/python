@@ -74,9 +74,8 @@ class SimpleTrainingManager:
 class CustomCheckpointCallback(tf.keras.callbacks.Callback):
     def __init__(self, checkpoint_dir, stage_number,
                  initial_epoch, metric=None,
-                 min_delta=1e-6, patience=10,
-                 gap_tolerance_ratio=1.3,
-                 min_gap_threshold=0.0015
+                 min_delta=1e-6, patience=10, check_save_mode=1, gap_tolerance_ratio=1.3, min_gap_threshold=0.0015
+
                  ):
         """
             Args:
@@ -87,8 +86,15 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
                         标准都使用：“验证损失（主）”，“验证mae"/"损失gap过拟合间隙（辅）"判断。
                 min_delta: 视为改进的最小变化量
                 patience: 早停的耐心值
-                gap_tolerance_ratio：可接受的过拟合gap 倍率 ，指标损失差（val_loss - loss）*ratio
-                min_gap_threshold：防止gap为0的时候 allowed_gap 永远为0
+
+                check_save_mode:
+                        1 - 验证损失满足min_delta条件的训练保存（min_delta高点）；在不满足条件里面的挑出来“虽然下降少，但gap比较好的”；
+                            几乎每个都判断gap
+                        2 - 验证损失满足大于等于min_delta的训练（min_delta较小，尽量不遗漏），需要再判断损失的val_loss - loss的gap是否最优。
+                            同时判断当前mae与历史保存的mae。
+                            涉及参数gap_tolerance_ratio：可接受的过拟合gap 倍率 ，指标损失差（val_loss - loss）*ratio
+                            min_gap_threshold：防止gap为0的时候 allowed_gap 永远为0
+                        模式1几乎每轮范围内的下降都判断gap，模式2大的下降直接纳入，只调整微弱
         """
         super().__init__()
         self.checkpoint_dir = checkpoint_dir
@@ -100,15 +106,16 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
 
         self.best_val_loss = float('inf')
         self.best_val_mae = float('inf')
-        self.best_gap = float('inf')
+        self.best_gap = min_gap_threshold
         self.best_model_path = None
         self.best_epoch = -1
+
         self.patience_counter = 0  # 耐心计数器
-        self.wait = 0  # 等待计数
         self.stopped_epoch = 0  # 停止的epoch
         self.patience = patience
-        self.gap_tolerance_ratio = gap_tolerance_ratio
+        self.check_save_mode = check_save_mode
         self.min_gap_threshold = min_gap_threshold
+        self.gap_tolerance_ratio = gap_tolerance_ratio
 
         os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -155,7 +162,6 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
                 self.best_val_mae = training_state['best_val_mae']
                 self.best_epoch = training_state['best_epoch']
                 self.patience_counter = training_state['patience_counter']
-                self.wait = training_state['wait']
                 logger.debug(f"恢复早停状态：best_loss={self.best_val_loss:.6f}, best_mae = {self.best_val_mae:.6f}"
                              f"best_epoch={self.best_epoch},patience_counter={self.patience_counter}")
 
@@ -203,48 +209,81 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             logger.warning(f"指标{primary_key}不存在于logs中")
             return
 
-        if current_val_loss < self.best_val_loss - self.min_delta:
+        if self.check_save_mode == 1:
 
-            # 辅助mae要考虑best_val_loss的更新，可能让后续更难触发 (current_val_mae<self.best_val_mae)
-            current_gap = abs(current_val_loss - current_loss)
-            allowed_gap = max(abs(self.best_gap) * self.gap_tolerance_ratio, self.min_gap_threshold)
+            if current_val_loss < self.best_val_loss - self.min_delta:
 
-            if current_gap <= allowed_gap:
-                self.best_val_loss = current_val_loss
-                self.best_loss = current_loss
-                self.best_gap = current_gap
-                self.best_val_mae = current_val_mae
-                self.best_epoch = epoch
+                current_gap = abs(current_val_loss - current_loss)
+                allowed_gap = max(abs(self.best_gap) * self.gap_tolerance_ratio, self.min_gap_threshold)
 
-                self.patience_counter = 0
-                self.wait = 0
-                self.best_model_path = self._save_checkpoint(epoch)
-                logger.debug(
-                    f"改进！保存最佳模型，验证损失:{current_val_loss:.6f}，验证MAE：{current_val_mae:.6f},损失GAP：{current_gap:.5f} ≤ {allowed_gap:.5f}")
+                if current_gap <= allowed_gap:
+                    self._update_best(current_val_loss, current_loss, current_val_mae, epoch)
+                    self.best_gap = current_gap
+                    self.patience_counter = 0
+                    logger.debug(
+                        f"改进！保存最佳模型，验证损失:{current_val_loss:.6f}，验证MAE：{current_val_mae:.6f}，"
+                        f"损失GAP：{current_gap:.5f} ≤ {allowed_gap:.5f}")
+                else:
+                    self.patience_counter += 1
+                    logger.debug(
+                        f"跳过保存，patience_counter:{self.patience_counter}/{self.patience},"
+                        f"验证损失下降但损失GAP - 当前gap {current_gap:.5f} > 最佳gap {allowed_gap:.5f}")
+                    self._check_early_stop(epoch)
             else:
-                self.patience_counter +=1
-                self.wait+=1
-                logger.debug(
-                    f"跳过保存，patience_counter:{self.patience_counter}/{self.patience} 验证损失下降但损失GAP - 当前gap {current_gap:.5f} > 最佳gap {allowed_gap:.5f}")
-
-                # 检查是否应该早停
-                if self.patience_counter >= self.patience:
-                    self.stopped_epoch = epoch
-                    self.model.stop_training = True
-                    logger.info(
-                        f"早停于 epoch {epoch}，最佳验证损失: {self.best_val_loss:.6f} ，最佳验证MAE：{self.best_val_mae} ,Val Loss Gap {self.best_gap:.5f} 于 inner_epoch {self.best_epoch}")
-
+                self.patience_counter += 1
+                logger.debug(f"最佳验证损失无改进，patience_counter:{self.patience_counter}/{self.patience}")
+                self._check_early_stop(epoch)
         else:
-            self.patience_counter += 1
-            self.wait += 1
-            logger.debug(f"验证损失无改进，patience_counter:{self.patience_counter}/{self.patience}")
+            # 显著改进：验证损失下降等于或超过 min_delta]
+            if self.best_val_loss - current_val_loss >= self.min_delta:
+                self._update_best(current_val_loss, current_loss, current_val_mae, epoch)
+                self.patience_counter = 0
+                logger.debug(
+                    f"显著改进！保存最佳模型，验证损失:{current_val_loss:.6f}，验证MAE：{current_val_mae:.6f}")
 
-            # 检查是否应该早停
-            if self.patience_counter >= self.patience:
-                self.stopped_epoch = epoch
-                self.model.stop_training = True
-                logger.info(
-                    f"早停于 epoch {epoch}，最佳验证损失: {self.best_val_loss:.6f} ，最佳验证MAE：{self.best_val_mae} ,Val Loss Gap {self.best_gap:.5f} 于 inner_epoch {self.best_epoch}")
+            # 微弱下降：下降量在 [0, min_delta) 之间
+            elif self.best_val_loss - current_val_loss >= 0:
+
+                current_gap = abs(current_val_loss - current_loss)
+                allowed_gap = max(abs(self.best_gap) * self.gap_tolerance_ratio, self.min_gap_threshold)
+
+                if current_gap <= allowed_gap and current_val_mae < self.best_val_mae:  # mae 也可以允许浮动一些
+                    self._update_best(current_val_loss, current_loss, current_val_mae, epoch)
+                    self.best_gap = current_gap
+                    self.patience_counter = 0
+                    logger.debug(
+                        f"微弱改进！保存最佳模型，验证损失:{current_val_loss:.6f}，验证MAE：{current_val_mae:.6f}。"
+                        f"当前gap:{current_gap:.5f} <= 允许gap:{allowed_gap:.5f}")
+
+                else:
+                    self.patience_counter += 1
+                    logger.debug(
+                        f"跳过保存（gap过大/mae大），patience_counter:{self.patience_counter}/{self.patience}，"
+                        f"当前gap {current_gap:.5f} > 允许gap {allowed_gap:.5f}"
+                        f"当前mae {current_val_mae:.5f} < 最佳mae {self.best_val_mae:.5f}")
+                    self._check_early_stop(epoch)
+            else:
+                self.patience_counter += 1
+                logger.debug(
+                    f"最佳验证损失未下降，patience_counter:{self.patience_counter}/{self.patience} ")
+                self._check_early_stop(epoch)
+
+    def _check_early_stop(self, epoch):
+        if self.patience_counter >= self.patience:
+            self.stopped_epoch = epoch
+            self.model.stop_training = True
+            logger.info(
+                f"早停于 epoch {epoch}，最佳验证损失: {self.best_val_loss:.6f} ，"
+                f"最佳验证MAE：{self.best_val_mae} ,Val Loss Gap {self.best_gap:.5f} ")
+            return True
+        return False
+
+    def _update_best(self, current_val_loss, current_loss, current_val_mae, epoch):
+        self.best_val_loss = current_val_loss
+        self.best_loss = current_loss
+        self.best_val_mae = current_val_mae
+        self.best_epoch = epoch
+        self.best_model_path = self._save_checkpoint(epoch)
 
     def _save_checkpoint(self, epoch):
         current_epoch_dir = f'epoch_{epoch}/'  # 转成内部-内部
@@ -294,7 +333,6 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
                 'best_val_mae': self.best_val_mae,
                 'best_epoch': self.best_epoch,
                 'patience_counter': self.patience_counter,
-                'wait': self.wait,
                 'stopped_epoch': self.stopped_epoch,
                 'stage_number': self.stage_number,
                 'metric': self.metric,
@@ -381,7 +419,7 @@ class CosineAnnealingWarmRestarts(tf.keras.callbacks.Callback):
                          如果不希望U形上升，将total_epochs 覆盖整个训练阶段）
         - warmup_epochs: warmup阶段epoch数（先小学习率"热身"，再大学习率训练）
         - warmup_power: warmup曲线形状 (1=线性（直线）, 2=二次（曲线）)
-        - restart_epochs: 重启点列表，如[15, 25]表示在第15、25个epoch重启
+        - restart_epochs: 重启点列表，如[15, 25]表示inner_epoch, 在第16、26轮训练就是热身轮（inner_epoch=15，25）
         
         学习率调度（热身 + 完整余弦周期，即取余弦函数在 [0,2π] 上的完整波形）。学习率先下降后上升，形成一个 U 形。
         如果再重复，就会形成多个 U 形（波浪形）。
@@ -529,16 +567,23 @@ class ForceLRCallback(tf.keras.callbacks.Callback):
 
 
 class TrainingMultiModel:
+    def __init__(self, history_plot=True):
+        self.history_plot = history_plot
 
     def training_model(self, model_name: str, trainset, valset,
                        learning_rate,
                        cos_min_lr, cos_total_epochs, cos_warmup_epochs,
                        total_epochs, verbose: int = 2, early_stop_patience=10,
+                       check_save_mode=1,
+                       gap_tolerance_ratio=1.3,
+                       min_gap_threshold=0.0015,
+
                        monitor=None, min_delta=1e-6,
                        basic_dir: str = None,
                        continue_from: str = None,
-                       model=None,
+                       model=None
                        # reduce_lr_patience=2, # Reduce学习率才用
+
                        ):
         """
         多任务模型：
@@ -625,7 +670,10 @@ class TrainingMultiModel:
                                                        initial_epoch=inner_epoch + 1,
                                                        metric=monitor,
                                                        min_delta=min_delta,
-                                                       patience=early_stop_patience)
+                                                       patience=early_stop_patience,
+                                                       check_save_mode=check_save_mode,
+                                                       gap_tolerance_ratio=gap_tolerance_ratio,
+                                                       min_gap_threshold=min_gap_threshold)
 
         """学习率-固定 ForceLRCallback"""
         force_callback = ForceLRCallback(start_epoch=inner_epoch + 1 if inner_epoch != 0 else 0, )
@@ -655,6 +703,9 @@ class TrainingMultiModel:
 
         # callbacks===========================================
 
+        # 诊断梯度
+        # probe_gradient_norm(model_, trainset, num_batches=30)
+
         record = model_.fit(
             trainset,
             validation_data=valset,
@@ -670,30 +721,38 @@ class TrainingMultiModel:
 
                 # 2. 最佳检查点（带早停）
                 checkpoint_callback,
-
                 # 3. TensorBoard
-                tensorboard_callback
+                tensorboard_callback,
+
             ]
         )
-
-        save_dir = os.path.expanduser("~/Python/NeuralNetwork/temperature_forecasting/data/pics/")
-        history_plot(history=record, model_name=model_name, save_dir=save_dir)
-
         best_model_info = checkpoint_callback.get_best_model_info()
+
+        if self.history_plot:
+            save_dir = os.path.expanduser("~/Python/NeuralNetwork/temperature_forecasting/data/pics/")
+            history_plot(history=record, model_name=model_name, save_dir=save_dir)
+
+
+
 
         return record, best_model_info['best_model_epoch_path']  # epoch
 
 
 class TrainingSingleModel(TrainingMultiModel):
+    def __init__(self,history_plot=False):
+        super().__init__(history_plot=history_plot)
 
     def training_model(self, model_name: str, trainset, valset,
                        learning_rate,
                        cos_min_lr, cos_total_epochs, cos_warmup_epochs,
                        total_epochs: int = 20, verbose: int = 2, early_stop_patience=5,
+                       check_save_mode=1,
+                       gap_tolerance_ratio=1.3,
+                       min_gap_threshold=0.0015,
                        monitor=None, min_delta=1e-6,
                        basic_dir: str = None,
                        continue_from: str = None,
-                       model=None,
+                       model=None
                        ):
         '''单任务模型：注释同 TrainingMultiModel'''
 
@@ -725,11 +784,69 @@ class TrainingSingleModel(TrainingMultiModel):
                   'cos_warmup_epochs': cos_warmup_epochs,
                   'total_epochs': total_epochs,
                   'verbose': verbose, 'early_stop_patience': early_stop_patience,
+                  'check_save_mode': check_save_mode,
+                  'gap_tolerance_ratio': gap_tolerance_ratio,
+                  'min_gap_threshold': min_gap_threshold,
                   'monitor': monitor, 'min_delta': min_delta,
                   'basic_dir': basic_dir,
                   'continue_from': continue_from,
                   'model': model}
         return super().training_model(**config)
+
+def probe_gradient_norm(model, dataset, num_batches=10):
+    logger.debug("\n 开始探测梯度范数 (Probe Mode)...")
+
+    # 确保模型已编译
+    if not model.optimizer:
+        raise ValueError("模型必须先 compile 才能探测梯度！")
+
+    grad_norms = []
+
+    if hasattr(dataset, '__iter__'):
+        data_iter = iter(dataset)
+    else:
+        # 如果是 numpy 数组，简单处理一下 (假设是 (x, y) 元组)
+        raise TypeError("请传入 tf.data.Dataset 对象用于探测")
+
+    for i in range(num_batches):
+        try:
+            x_batch, y_batch = next(data_iter)
+        except StopIteration:
+            logger.debug("数据集长度不足，提前结束探测。")
+            break
+
+        with tf.GradientTape() as tape:
+            predictions = model(x_batch, training=True)
+            # 使用模型编译时指定的 loss 函数
+            loss = model.compiled_loss(y_batch, predictions, regularization_losses=model.losses)
+
+        # 计算梯度
+        grads = tape.gradient(loss, model.trainable_weights)
+        grads = [g for g in grads if g is not None]
+
+        if grads:
+            g_norm = tf.linalg.global_norm(grads)
+            val = g_norm.numpy()
+            grad_norms.append(val)
+            logger.debug(f"  Batch {i}: 梯度范数 = {val:.4f}")
+        else:
+            logger.debug(f"  Batch {i}: 无梯度 (检查 Loss 或输入)")
+
+    if grad_norms:
+        avg_norm = sum(grad_norms) / len(grad_norms)
+        max_norm = max(grad_norms)
+        logger.debug("-" * 30)
+        logger.debug(f"探测结果汇总:")
+        logger.debug(f"   平均范数: {avg_norm:.4f}")
+        logger.debug(f"   最大范数: {max_norm:.4f}")
+
+        suggested_clip = max(1.0, max_norm * 1.2)  # 留 20% 余量
+        logger.debug(f"    建议设置 clipnorm = {suggested_clip:.1f}")
+        logger.debug("-" * 30)
+        return suggested_clip
+    else:
+        logger.debug("未能计算出有效梯度。")
+        return None
 
 
 """
@@ -760,19 +877,3 @@ train accuracy 不断下降   validation loss 不断上升---数据集有问题�
 
 后期过拟合                      | 减少total_epochs (30→25)或增加EarlyStopping
 """
-
-# if current_val_loss < best_val_loss - min_delta:
-#     # 显著改进，无条件保存
-#     save_model()
-#     best_val_loss = current_val_loss
-#     best_epoch = current_epoch
-# elif abs(current_val_loss - best_val_loss) < min_delta:
-#     # 处于“持平”区域，启动辅助判断
-#     if current_val_mae < best_val_mae:
-#         # Loss 差不多，但 MAE 更好，保存！
-#         save_model()
-#         best_val_mae = current_val_mae
-#         # 注意：这里 best_val_loss 可以不更新，或者更新为当前值，取决于你想不想让后续更难触发
-#     # 或者：
-#     # if (current_train_loss - current_val_loss) < (best_train_loss - best_val_loss):
-#     #     save_model()

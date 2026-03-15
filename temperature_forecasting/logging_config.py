@@ -36,7 +36,7 @@ LOGGING_CONFIG = {
         },
         'data.feature_engineering.feature_generation_from_numeric': {
             'handlers': ['default'],
-            'level': 'WARNING',  # 显示WARNING及以上（更详细）
+            'level': 'DEBUG',  # 显示WARNING及以上（更详细）
             'propagate': False
         },
         'data.feature_engineering.feature_generation_from_time': {
@@ -44,6 +44,11 @@ LOGGING_CONFIG = {
             'level': 'DEBUG',
             'propagate': True
         },
+        'evaluation.model_evaluation': {
+            'handlers': ['default'],
+            'level': 'DEBUG',
+            'propagate': True},
+
         'sklearn': {  # 第三方库sklearn的配置
             'handlers': ['default'],
             'level': 'WARNING',  # 只显示WARNING及以上（减少噪音）

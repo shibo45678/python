@@ -15,6 +15,7 @@ from pydantic.v1 import validate_arguments
 from pydantic import Field
 from sklearn.utils.validation import check_is_fitted
 from data.decorator import validate_input
+from evaluation.model_feature_importance import FeatureImportance
 from models.cnn import MultiTasksCnnModel
 from models.lstm import SingleTaskLstmModel, MultiTasksLstmModel
 from training.training_models import TrainingSingleModel, TrainingMultiModel
@@ -60,23 +61,22 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.history_ = None
         self.train_window_data_ = None
         self.val_window_data_ = None
-        self.test_window_data_ = None
         self.input_cols_ = None  # 处理掉时间列，保证进入模型的所有列是数值
-        self.forecast_window_gen_ = None
         self.train_window_gen_ = None
+        self.forecast_window_gen_ = None
         self.forecast_window_config_ = None
         self.stage_number_ = -1
 
     def fit(self, X: dict, y=None):
-        train_datasets = X['train_datasets']
-        val_datasets = X['val_datasets']
+        train_data = X.get('train_data')
+        val_data = X.get('val_data')
 
         # 0.处理时间列
-        datetime_cols = train_datasets.select_dtypes(include=['datetime64']).columns
-        self.input_cols_ = [col for col in list(train_datasets.columns) if col not in datetime_cols]
+        datetime_cols = train_data.select_dtypes(include=['datetime64']).columns
+        self.input_cols_ = [col for col in list(train_data.columns) if col not in datetime_cols]
 
-        train_datasets_ = train_datasets[self.input_cols_]
-        val_datasets_ = val_datasets[self.input_cols_]
+        train_datasets_ = train_data[self.input_cols_]
+        val_datasets_ = val_data[self.input_cols_]
 
         #  构建模型 （神经网络预处理已经返回了模型期望的正确格式，不copy）
         # 1.1 获得embedding_info
@@ -86,8 +86,9 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         # 1.2 处理窗口数据
         self.train_window_gen_ = self._train_window_generator(self.model_config['output_config'])
-        train_window_data = self.train_window_gen_.createDataset(train_datasets_)
-        val_window_data = self.train_window_gen_.createDataset(val_datasets_)
+        self.train_window_data_ = self.train_window_gen_.createDataset(train_datasets_)
+        self.val_window_data_ = self.train_window_gen_.createDataset(val_datasets_)
+
 
         """
         在保证不影响 main函数，目前 preprocessor,postprocess 以及deployment逻辑（保证进程活着）的前提下，存储模型。self.best_checkpoint 来源：
@@ -105,15 +106,21 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             multi_model = self.model_config.get('multi_tasks', False)
 
             training_config = {'model_name': model_name, 'continue_from': continue_train,
-                               'trainset': train_window_data, 'valset': val_window_data,
+                               'trainset': self.train_window_data_, 'valset': self.val_window_data_,
+
                                'learning_rate': self.model_config['learning_rate'],
+                               'total_epochs': self.model_config['total_epochs'],
                                'cos_min_lr': self.model_config['cos_min_lr'],
                                'cos_total_epochs': self.model_config['cos_total_epochs'],
                                'cos_warmup_epochs': self.model_config['cos_warmup_epochs'],
-                               'total_epochs': self.model_config['total_epochs'],
                                'verbose': self.model_config['verbose'],
+
                                'early_stop_patience': self.model_config['early_stop_patience'],
-                               'min_delta': self.model_config['min_delta']}
+                               'min_delta': self.model_config['min_delta'],
+                               'check_save_mode': self.model_config['check_save_mode'],
+                               'gap_tolerance_ratio': self.model_config['gap_tolerance_ratio'],
+                               'min_gap_threshold': self.model_config['min_gap_threshold'],
+                               }
 
             if continue_train is None:
                 # 首次（构建模型）
@@ -126,8 +133,9 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
                 self.stage_number_ = -1
 
-                self._save_preprocessed_data(continue_training_dir=continue_training_dir, trainset=train_window_data,
-                                             valset=val_window_data)
+                self._save_preprocessed_data(continue_training_dir=continue_training_dir,
+                                             trainset=self.train_window_data_,
+                                             valset=self.val_window_data_)
             else:
                 # 继续（直接加载）
                 basic_dir = None
@@ -143,7 +151,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
                 if continue_train is not None:
                     first_training_config_multi = {**training_config,
                                                    'model': None,
-                                                   'monitor':self.model_config['monitor'] }
+                                                   'monitor': self.model_config['monitor']}
                 else:
                     if model_name.startswith('multi_lstm'):
                         model_config = {**self.model_config,
@@ -165,7 +173,7 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
 
                     first_training_config_multi = {**training_config,
                                                    'model': self.training_model_,
-                                                   'monitor':self.model_config['monitor']}
+                                                   'monitor': self.model_config['monitor']}
 
                 train = TrainingMultiModel()
                 self.history_, best_checkpoint_epoch = train.training_model(**first_training_config_multi)
@@ -208,8 +216,15 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.prediction_model_ = self.load_best_model()
 
         # 1.5 评估模型
-        self.evaluate_model(dataset=val_window_data, dataset_type='val')
+        self.evaluate_model(dataset=self.val_window_data_, dataset_type='val')
 
+        # 1.6 计算验证集特征重要性
+        computer = FeatureImportance()
+        computer.permutation_importance_lstm(model=self.prediction_model_,valsets=self.val_window_data_,
+                                             n_repeats=5,output_configs=self.model_config['output_config'],
+                                             num_feature_names =self.model_config.get('numeric_columns'),
+                                             cat_feature_names = self.model_config.get('categorical_columns'),
+                                             model_name = self.model_config['model_type'])
         self.is_fitted_ = True
 
         return self
@@ -232,6 +247,15 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         predictions = self.prediction_model_.predict(predict_window_data)  # 多输入和输出（tuple,dict）->预测结果是list
 
         return predictions
+
+    def permutation_importance_lstm(self, model, X_val, y_val, feature_names):
+        """计算 LSTM 的排列重要性
+            model: 训练好的 LSTM 模型
+            X_val: 验证数据 (3D: [样本, 时间步, 特征])  验证集
+
+            y_val: 验证标签             raw_predictions(字典格式）
+            feature_names: 特征名称列表
+            n_repeats: 每个特征重复打乱的次数"""
 
     def _save_preprocessed_data(self, continue_training_dir, trainset, valset):
         model_name = self.model_config['model_type']
@@ -340,20 +364,22 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             numeric_columns=self.model_config['numeric_columns'],
             categorical_columns=self.model_config['categorical_columns'],
             embedding_configs=self.embedding_info_,
-            output_configs=output_config
+            output_configs=output_config,
+            batch_size=self.model_config['batch_size']
         )
 
         return train_window_gen
 
     def _forecast_window_generator(self):
 
-        self.predict_window_gen = EnhancedWindowGenerator(
+        self.forecast_window_gen_ = EnhancedWindowGenerator(
             mode='forecast',
             input_width=self.model_config['input_width'],
             # 预测模式不需要label_width和shift
             numeric_columns=self.model_config['numeric_columns'],
             categorical_columns=self.model_config.get('categorical_columns'),
             embedding_configs=self.embedding_info_,
+            batch_size=self.model_config['batch_size']
         )
 
         self.forecast_window_config_ = {
@@ -362,10 +388,10 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
             'numeric_columns': self.model_config['numeric_columns'],
             'categorical_columns': self.model_config.get('categorical_columns'),
             'embedding_configs': self.embedding_info_,
-
+            'batch_size': self.model_config['batch_size']
         }
 
-        return self.predict_window_gen, self.forecast_window_config_
+        return self.forecast_window_gen_, self.forecast_window_config_
 
     def _get_compile_config_for_save(self):
 
@@ -506,7 +532,7 @@ class TimeSeriesPostProcessor:
 
     def _save_to_disk(self, save_dir):
         os.makedirs(save_dir, exist_ok=True)
-        state_file = Path(save_dir) / 'pipeline_states.pkl'
+        state_file = Path(save_dir) / 'pipeline_states.cpkl'
 
         save_data = {
             'serialized_states': self.serialized_states,
@@ -514,7 +540,7 @@ class TimeSeriesPostProcessor:
             'saved_at': datetime.datetime.now().isoformat()
         }
         with state_file.open('wb') as f:
-            pickle.dump(save_data, f)
+            cloudpickle.dump(save_data, f)
         logger.info(f"Pipeline状态已保存到: {state_file}")
         return save_data
 
@@ -1348,80 +1374,79 @@ class MetricsCalculator:
         RMSE = np.sqrt(MSE)
         return MAE, MSE, RMSE, pairs_df, hierarchical_metrics
 
-
-if __name__ == '__main__':
-    import pandas as pd
-
-    ## 示例1：使用字符串时间键
-    dates = ['2016-12-31 17:00:00', '2016-12-31 18:00:00', '2016-12-31 19:00:00', '2016-12-31 20:00:00',
-             '2016-12-31 21:00:00', '2016-12-31 22:00:00', '2016-12-31 23:00:00', '2017-01-01 00:00:00']
-
-    no_scaled_data = {
-        'Date Time': ['2016-12-31 17:00:00', '2016-12-31 18:00:00', '2016-12-31 19:00:00', '2016-12-31 20:00:00',
-                      '2016-12-31 21:00:00', '2016-12-31 22:00:00', '2016-12-31 23:00:00', '2017-01-01 00:00:00'],
-        'T': [1.41, -0.08, -1.03, -1.52, -3.09, -2.59, -3.76, -4.82],  #
-        'rh': [64.81, 69.81, 70.7, 65.42, 73.7, 71.3, 72.5, 75.7]
-    }
-    no_scaled_data = pd.DataFrame(no_scaled_data)
-    no_scaled_data['Date Time'] = pd.to_datetime(no_scaled_data['Date Time'], format='%Y-%m-%d %H:%M:%S')
-    predictions_df = {
-        'window_end': ['2016-12-31 17:00:00', '2016-12-31 17:00:00', '2016-12-31 17:00:00', '2016-12-31 17:00:00',
-                       '2016-12-31 17:00:00',
-                       '2016-12-31 18:00:00', '2016-12-31 18:00:00', '2016-12-31 18:00:00', '2016-12-31 18:00:00',
-                       '2016-12-31 18:00:00',
-                       '2016-12-31 19:00:00', '2016-12-31 19:00:00', '2016-12-31 19:00:00', '2016-12-31 19:00:00',
-                       '2016-12-31 19:00:00',
-                       '2016-12-31 20:00:00', '2016-12-31 20:00:00', '2016-12-31 20:00:00', '2016-12-31 20:00:00',
-                       '2016-12-31 20:00:00'],
-        'forecast_time': ['2016-12-31 17:00:00', '2016-12-31 18:00:00', '2016-12-31 19:00:00', '2016-12-31 20:00:00',
-                          '2016-12-31 21:00:00',
-                          '2016-12-31 18:00:00', '2016-12-31 19:00:00', '2016-12-31 20:00:00', '2016-12-31 21:00:00',
-                          '2016-12-31 22:00:00',
-                          '2016-12-31 19:00:00', '2016-12-31 20:00:00', '2016-12-31 21:00:00', '2016-12-31 22:00:00',
-                          '2016-12-31 23:00:00',
-                          '2016-12-31 20:00:00', '2016-12-31 21:00:00', '2016-12-31 22:00:00', '2016-12-31 23:00:00',
-                          '2017-01-01 00:00:00'],
-        'T_pred': [3.8703365, 3.884691, 3.4577994, 3.7306015, 2.2956214, 2.6391318, 2.5926297, 2.2178895, 2.5358593,
-                   1.0858217, 1.77491, 1.7106596, 1.1285466, 1.1749766, -0.014756217, 0.88609976, 0.75710475,
-                   0.19265927, 0.11487619, -0.86728024],
-        'rh_pred': [79.67318, 80.484695, 80.43478, 83.38382, 83.45128, 80.5278, 81.90515, 81.87326, 85.21435, 84.81238,
-                    81.605484, 83.30215, 83.313484, 86.7817, 86.10873, 83.98053, 85.9154, 85.84884, 89.42158, 88.54782]
-    }
-
-    predictions_df = pd.DataFrame(predictions_df)
-    predictions_df['window_end'] = pd.to_datetime(predictions_df['window_end'], format='%Y-%m-%d %H:%M:%S')
-    predictions_df['forecast_time'] = pd.to_datetime(predictions_df['forecast_time'], format='%Y-%m-%d %H:%M:%S')
-
-    predictions = {
-        'T': [
-            [3.8703365, 3.884691, 3.4577994, 3.7306015, 2.2956214],
-            [2.6391318, 2.5926297, 2.2178895, 2.5358593, 1.0858217],
-            [1.77491, 1.7106596, 1.1285466, 1.1749766, -0.014756217],
-            [0.88609976, 0.75710475, 0.19265927, 0.11487619, -0.86728024]
-        ],
-        'rh': [[79.67318, 80.484695, 80.43478, 83.38382, 83.45128],
-               [80.5278, 81.90515, 81.87326, 85.21435, 84.81238, ],
-               [81.605484, 83.30215, 83.313484, 86.7817, 86.10873],
-               [83.98053, 85.9154, 85.84884, 89.42158, 88.54782]]
-    }
-
-    # 验证生成基础dataframe step calculate_mape
-    time_column = 'Date Time'
-    task_names = ['T', 'rh']
-    combined = pd.merge(
-        predictions_df.copy(),
-        no_scaled_data.copy(),
-        left_on='forecast_time',
-        right_on=time_column,
-        how='left',
-    )
-    logger.debug(f"合并后的数据是{combined.tail(10)}")
-
-    # 验证逐时间步
-    step_res = MetricsCalculator.calc_every_pair(data=combined, task_names=task_names)
-    print(step_res.head(50))
-
-    # 逐时间点timepoint / 整体mape / 日级别 mape
-    mape_dict = MetricsCalculator.predictions_by_time(predictions=predictions, actual_data=no_scaled_data.copy(),
-                                                      input_width=6, shift=24, level='o')
-    logger.debug(f"mape_dict含有的任务：{mape_dict.keys}")
+# if __name__ == '__main__':
+# import pandas as pd
+#
+# ## 示例1：使用字符串时间键
+# dates = ['2016-12-31 17:00:00', '2016-12-31 18:00:00', '2016-12-31 19:00:00', '2016-12-31 20:00:00',
+#          '2016-12-31 21:00:00', '2016-12-31 22:00:00', '2016-12-31 23:00:00', '2017-01-01 00:00:00']
+#
+# no_scaled_data = {
+#     'Date Time': ['2016-12-31 17:00:00', '2016-12-31 18:00:00', '2016-12-31 19:00:00', '2016-12-31 20:00:00',
+#                   '2016-12-31 21:00:00', '2016-12-31 22:00:00', '2016-12-31 23:00:00', '2017-01-01 00:00:00'],
+#     'T': [1.41, -0.08, -1.03, -1.52, -3.09, -2.59, -3.76, -4.82],  #
+#     'rh': [64.81, 69.81, 70.7, 65.42, 73.7, 71.3, 72.5, 75.7]
+# }
+# no_scaled_data = pd.DataFrame(no_scaled_data)
+# no_scaled_data['Date Time'] = pd.to_datetime(no_scaled_data['Date Time'], format='%Y-%m-%d %H:%M:%S')
+# predictions_df = {
+#     'window_end': ['2016-12-31 17:00:00', '2016-12-31 17:00:00', '2016-12-31 17:00:00', '2016-12-31 17:00:00',
+#                    '2016-12-31 17:00:00',
+#                    '2016-12-31 18:00:00', '2016-12-31 18:00:00', '2016-12-31 18:00:00', '2016-12-31 18:00:00',
+#                    '2016-12-31 18:00:00',
+#                    '2016-12-31 19:00:00', '2016-12-31 19:00:00', '2016-12-31 19:00:00', '2016-12-31 19:00:00',
+#                    '2016-12-31 19:00:00',
+#                    '2016-12-31 20:00:00', '2016-12-31 20:00:00', '2016-12-31 20:00:00', '2016-12-31 20:00:00',
+#                    '2016-12-31 20:00:00'],
+#     'forecast_time': ['2016-12-31 17:00:00', '2016-12-31 18:00:00', '2016-12-31 19:00:00', '2016-12-31 20:00:00',
+#                       '2016-12-31 21:00:00',
+#                       '2016-12-31 18:00:00', '2016-12-31 19:00:00', '2016-12-31 20:00:00', '2016-12-31 21:00:00',
+#                       '2016-12-31 22:00:00',
+#                       '2016-12-31 19:00:00', '2016-12-31 20:00:00', '2016-12-31 21:00:00', '2016-12-31 22:00:00',
+#                       '2016-12-31 23:00:00',
+#                       '2016-12-31 20:00:00', '2016-12-31 21:00:00', '2016-12-31 22:00:00', '2016-12-31 23:00:00',
+#                       '2017-01-01 00:00:00'],
+#     'T_pred': [3.8703365, 3.884691, 3.4577994, 3.7306015, 2.2956214, 2.6391318, 2.5926297, 2.2178895, 2.5358593,
+#                1.0858217, 1.77491, 1.7106596, 1.1285466, 1.1749766, -0.014756217, 0.88609976, 0.75710475,
+#                0.19265927, 0.11487619, -0.86728024],
+#     'rh_pred': [79.67318, 80.484695, 80.43478, 83.38382, 83.45128, 80.5278, 81.90515, 81.87326, 85.21435, 84.81238,
+#                 81.605484, 83.30215, 83.313484, 86.7817, 86.10873, 83.98053, 85.9154, 85.84884, 89.42158, 88.54782]
+# }
+#
+# predictions_df = pd.DataFrame(predictions_df)
+# predictions_df['window_end'] = pd.to_datetime(predictions_df['window_end'], format='%Y-%m-%d %H:%M:%S')
+# predictions_df['forecast_time'] = pd.to_datetime(predictions_df['forecast_time'], format='%Y-%m-%d %H:%M:%S')
+#
+# predictions = {
+#     'T': [
+#         [3.8703365, 3.884691, 3.4577994, 3.7306015, 2.2956214],
+#         [2.6391318, 2.5926297, 2.2178895, 2.5358593, 1.0858217],
+#         [1.77491, 1.7106596, 1.1285466, 1.1749766, -0.014756217],
+#         [0.88609976, 0.75710475, 0.19265927, 0.11487619, -0.86728024]
+#     ],
+#     'rh': [[79.67318, 80.484695, 80.43478, 83.38382, 83.45128],
+#            [80.5278, 81.90515, 81.87326, 85.21435, 84.81238, ],
+#            [81.605484, 83.30215, 83.313484, 86.7817, 86.10873],
+#            [83.98053, 85.9154, 85.84884, 89.42158, 88.54782]]
+# }
+#
+# # 验证生成基础dataframe step calculate_mape
+# time_column = 'Date Time'
+# task_names = ['T', 'rh']
+# combined = pd.merge(
+#     predictions_df.copy(),
+#     no_scaled_data.copy(),
+#     left_on='forecast_time',
+#     right_on=time_column,
+#     how='left',
+# )
+# logger.debug(f"合并后的数据是{combined.tail(10)}")
+#
+# # 验证逐时间步
+# step_res = MetricsCalculator.calc_every_pair(data=combined, task_names=task_names)
+# print(step_res.head(50))
+#
+# # 逐时间点timepoint / 整体mape / 日级别 mape
+# mape_dict = MetricsCalculator.predictions_by_time(predictions=predictions, actual_data=no_scaled_data.copy(),
+#                                                   input_width=6, shift=24, level='o')
+# logger.debug(f"mape_dict含有的任务：{mape_dict.keys}")

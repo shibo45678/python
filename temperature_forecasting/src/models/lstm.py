@@ -32,6 +32,8 @@ class MethodConfig(BaseModel):
     output_config: Dict[str, Dict] = Field(...,
                                            description="输出配置 {输出列: {type: regression/classification, ...}}")
     learning_rate: float = Field(default=0.00035)
+    weight_decay:float = Field(default=1e-5)
+    clipnorm :float = Field(default=1.0,description="如果设置比最大值还大，就确保没有任何一个梯度被裁剪")
 
     @classmethod
     def from_dict(cls, config: Optional[Dict]) -> Optional['MethodConfig']:
@@ -63,9 +65,34 @@ class SingleTaskLstmModel:
         self.model = None
         self.model_config = self._initialize_config(config)
         '''
-        如果单层效果不好：可以加LSTM层数 units = [64, 32]  # 逐步压缩特征 return_sequences = [True, False]
-        如果效果还不好，多层 压缩  1. 更深的网络 [128, 64, 32]  2. 更宽的网络 [64, 32] 
-        '''
+            参数说明：        
+            output_config: 输出配置字典(每个输出特征单独一层)
+            output_config = {
+                        'temperature': {'type': 'regression', # 单变量回归
+                                        'loss':'mse',
+                                        'metrics':['mae'],
+                                        'units': 1,  #  每个时间步预测n个特征
+                                        },
+
+                        'weather_metrics': {'type': 'regression', # 多变量回归：比如经度和纬度
+                                            'loss':'mse',
+                                            'metrics':['mae'],
+                                            'units': 4,           # 每个时间步预测4个指标
+                                            },
+
+                        'event_occurrence': {'type': 'binary_classification', # 二分类
+                                            'loss':'binary_crossentropy',
+                                            'metrics':['accuracy'],
+                                            'units': 1,
+                                            },
+
+                        'weather_type': {'type': 'classification', # 多分类
+                                        'loss':'sparse_categorical_crossentropy',
+                                        'metrics':['accuracy'],
+                                        'num_classes': 3,
+                                        },
+                        }
+            '''
 
     def _initialize_config(self, config):
         if isinstance(config, dict):
@@ -86,6 +113,8 @@ class SingleTaskLstmModel:
         units = self.model_config.units
         return_sequences = self.model_config.return_sequences
         learning_rate = self.model_config.learning_rate
+        weight_decay=self.model_config.weight_decay
+        clipnorm=self.model_config.clipnorm
 
         numeric_input = tf.keras.layers.Input(
             shape=(input_width, len(num_cols)),
@@ -221,12 +250,14 @@ class SingleTaskLstmModel:
         model = tf.keras.Model(inputs=all_inputs, outputs=outputs)
 
         model.compile(
-            optimizer=tf.keras.optimizers.AdamW(learning_rate=learning_rate, weight_decay=1e-5),
+            optimizer=tf.keras.optimizers.AdamW(learning_rate=learning_rate,
+                                                weight_decay=weight_decay,
+                                                clipnorm=clipnorm),
             loss=loss_dict,
             loss_weights=loss_weights,  # {'T': 1},
             metrics=metric_dict
         )
-
+        # clipnorm: 梯度太大了，可能会把模型“带偏”或导致数值溢出，强制让每一步的更新幅度有一个上限，让训练曲线更平滑。
         return model
 
 
@@ -235,36 +266,6 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
 
     def __init__(self, config):
         super().__init__(config)
-
-    '''
-            参数说明：
-            output_config: 输出配置字典(每个输出特征单独一层)
-            output_config = {
-                        'temperature': {'type': 'regression', # 单变量回归
-                                        'loss':'mse',
-                                        'metrics':['mae'],
-                                        'units': 1,  #  每个时间步预测n个特征
-                                        },
-
-                        'weather_metrics': {'type': 'regression', # 多变量回归：比如经度和纬度
-                                            'loss':'mse',
-                                            'metrics':['mae'],
-                                            'units': 4,           # 每个时间步预测4个指标
-                                            },
-
-                        'event_occurrence': {'type': 'binary_classification', # 二分类
-                                            'loss':'binary_crossentropy',
-                                            'metrics':['accuracy'],
-                                            'units': 1,
-                                            },
-
-                        'weather_type': {'type': 'classification', # 多分类
-                                        'loss':'sparse_categorical_crossentropy',
-                                        'metrics':['accuracy'],
-                                        'num_classes': 3,
-                                        },
-                        }
-    '''
 
     def _build_lstm_model(self):
         input_width = self.model_config.input_width
@@ -276,6 +277,8 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
         learning_rate = self.model_config.learning_rate
         units = self.model_config.units  # len控制lstm的层数
         return_sequences = self.model_config.return_sequences  # 是否只在最后一个时间步产生输出，对应LSTM层数
+        weight_decay=self.model_config.weight_decay
+        clipnorm=self.model_config.clipnorm
 
         numeric_input = tf.keras.layers.Input(
             shape=(input_width, len(num_cols)),
@@ -434,7 +437,7 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
         model = tf.keras.Model(inputs=all_inputs, outputs=outputs)
 
         model.compile(
-            optimizer=tf.keras.optimizers.AdamW(learning_rate=learning_rate, weight_decay=1e-5),
+            optimizer=tf.keras.optimizers.AdamW(learning_rate=learning_rate, weight_decay=weight_decay,clipnorm=clipnorm),
             loss=loss_dict,
             loss_weights=loss_weights,
             metrics=metric_dict
