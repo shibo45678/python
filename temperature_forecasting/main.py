@@ -225,8 +225,8 @@ def main():
         '/Users/shibo/Python/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage0',
 
         # continue_training.py文件的继续训练结果（至epoch)
-        'final_best_model': None,
-        # '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
+        'final_best_model': # None,
+         '/Users/shibo/Python/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage1/epoch_36'
     }}
 
     # multi_lstm_model_config2 = {**base_lstm_model_config, **{
@@ -264,7 +264,7 @@ def main():
 
     # 并行训练和预测
     def train_single_config(config, X, y, preprocessor,
-                            save_dir=None, calc_metrics=True, original_data_no_scaled=None, original_data_scaled=None,
+                            save_deployment_package=False, calc_metrics=True, original_data_no_scaled=None, original_data_scaled=None,
                            ):
         """
         单个模型的训练和预测流程
@@ -274,7 +274,7 @@ def main():
             X: 训练数据（字典-训练数据和验证数据）
             y: 标签（可能为None）
             preprocessor: 预处理器对象,提取逆转换pipeline步骤
-            save_dir: 保存目录，如果为None则不保存
+            save_deployment_package: 是否保存部署文件
             original_data_no_scaled : 测试集计算指标 的原数（mape:时间列采样/连续性处理）
             original_data_scaled: 测试数据，计算指标 的原数据（mae,mse:时间列采样/连续性处理/标准化）
 
@@ -298,15 +298,11 @@ def main():
             postprocessor = TimeSeriesPostProcessor(
                 {'model_name': model_name,
                  'preprocessor': preprocessor,
-                 'save_dir': save_dir,
                  'task_names': list(config.get('output_config').keys()),
                  'output_width': config.get('output_width', 1),
                  'time_col_name': config.get('time_column', 'Date Time')
                  }
             )
-
-            # 捕获preprocessor状态
-            postprocessor.capture_and_save_pipeline_state()
 
             # 4. 预测
             features_temp_test_data_copy = copy.deepcopy(original_data_scaled)
@@ -368,7 +364,7 @@ def main():
             predict_window_, predict_window_config = estimator._forecast_window_generator()
             best_checkpoint = estimator.best_checkpoint  # 'saved_model/multi_lstm1_20260104_143043/tf_checkpoints/model_epoch_2/'
 
-            if save_dir:
+            if save_deployment_package:
                 deployment = DeploymentManager(
                     model_name=config['model_type'],
                     bestpoint=best_checkpoint,
@@ -408,8 +404,7 @@ def main():
         futures = [executor.submit(train_single_config, config, X=data, y=None, preprocessor=preprocessor,
                                    original_data_scaled=features_temp_test,  # 预处理后的测试集数据（时间列处理，采样，标准化）
                                    original_data_no_scaled=valid_df_test,  # 预处理前的测试集数据（时间列处理，采样）
-                                   save_dir='/Users/shibo/Python/NeuralNetwork/saved_model_state',
-                                   )
+                                   save_deployment_package=True)
                    for config in configs]
 
         for future, config in zip(futures, configs):

@@ -30,103 +30,15 @@ class TimeSeriesPostProcessor:
     1. 时间戳生成和拼接
     2. 逆转换（标准化还原）
     3. 多任务结果处理
-    4. 状态保存和加载(预处理的cleaner/pipeline
-    args: config 包括：
-                 'model_name':model_name,
-                 'preprocessor':preprocessor,
-                 'save_dir': save_dir,
-                 'task_names':config.get('output_config').keys().tolist(),
-                 'output_width':config.get('output_width',1),
-                 'time_col_name'：引用原列名
+    4. 状态保存和加载(预处理的cleaner/pipeline)
+    5. 指标计算
     """
 
     @validate_arguments
     def __init__(self, config: Dict = Field(..., description="配置字典，包含freq、shift等信息")):
         self.config = config
         self.serialized_states = {}  # pipeline序列化状态
-        self._temp_preprocessor = None  # 受保护（约定上外部不应直接访问
-
-    def capture_and_save_pipeline_state(self):
-        """
-        捕获并立即序列化保存pipeline状态
-        """
-        # 1. 保存临时引用
         self._temp_preprocessor = self.config.get('preprocessor', None)
-
-        # 2. 提取并序列化状态
-        serialized_states = {}
-        if hasattr(self._temp_preprocessor, 'pipelines_'):
-            for pipe_name, pipeline in self._temp_preprocessor.pipelines_.items():
-                serialized_states[pipe_name] = {}
-
-                for step_name, transformer in pipeline.named_steps.items():
-                    try:
-                        serialized = cloudpickle.dumps(transformer)
-                        serialized_states[pipe_name][step_name] = {
-                            'pickled': serialized,
-                            'type': type(transformer).__name__,
-                            'pickle_type': 'cloudpickle',
-                            'params': transformer.get_params() if hasattr(transformer, 'get_params') else {}
-                        }
-                        logger.debug(f"成功使用 cloudpickle 序列化 {pipe_name}.{step_name}")
-
-                    except Exception as e:
-                        logger.info(f"cloudpickle 序列化失败{pipe_name}.{step_name}:{e}")
-
-                        # 尝试 fallback 到标准 pickle
-                        try:
-                            import pickle
-                            serialized = pickle.dumps(transformer)
-                            serialized_states[pipe_name][step_name] = {
-                                'pickled': serialized,
-                                'type': type(transformer).__name__,
-                                'pickle_type': 'pickle',  # 标记使用的序列化方式
-                                'params': transformer.get_params() if hasattr(transformer, 'get_params') else {}
-                            }
-                            logger.info(f"fallback: 使用标准 pickle 序列化 {pipe_name}.{step_name}")
-
-                        except Exception as e2:
-                            logger.error(f"所有序列化方法都失败 {pipe_name}.{step_name}: {e2}")
-
-                            # 如果pickle失败，只保存关键属性
-                            serialized_states[pipe_name][step_name] = {
-                                'pickled': None,
-                                'type': type(transformer).__name__,
-                                'attributes': self._extract_critical_attributes(transformer)
-                            }
-            self.serialized_states = serialized_states
-
-            # 3. 如果指定了保存目录，立即写入磁盘
-            save_dir = self.config.get('save_dir', '/Users/shibo/Python/NeuralNetwork/saved_model_state')
-            if save_dir:
-                self._save_to_disk(save_dir)
-
-            return self
-
-    def _extract_critical_attributes(self, transformer):
-        attrs = {}
-
-        if hasattr(transformer, 'scaling_config_'):
-            attrs['scaling_config_'] = transformer.scaling_config_.tolist() if hasattr(transformer.scaling_config_,
-                                                                                       'tolist') else transformer.scaling_config_
-        if hasattr(transformer, 'encoders_'):
-            attrs['encoders_'] = transformer.encoders_
-
-        return attrs
-
-    def _save_to_disk(self, save_dir):
-        os.makedirs(save_dir, exist_ok=True)
-        state_file = Path(save_dir) / 'pipeline_states.cpkl'
-
-        save_data = {
-            'serialized_states': self.serialized_states,
-            'config': self.config,
-            'saved_at': datetime.datetime.now().isoformat()
-        }
-        with state_file.open('wb') as f:
-            cloudpickle.dump(save_data, f)
-        logger.info(f"Pipeline状态已保存到: {state_file}")
-        return save_data
 
     def custom_inverse_transform(self, raw_predictions: Dict, task_config, use_saved, output_width, **kwargs):
         """
