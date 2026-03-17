@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import shap
 
-from data import Visualization, EnhancedWindowGenerator
+from data import Visualization
 from .model_evaluation import ModelEvaluation
 import logging
 
@@ -130,7 +130,7 @@ class FeatureImportance:
                 })
                 importance_sorted = importance_df.sort_values('importance', ascending=False)
                 importance_sorted.to_csv(
-                    f'/Users/shibo/Python/NeuralNetwork/temperature_forecasting/data/intermediate/feature_importance_{task_name}')
+                    f'/Users/shibo/AL/NeuralNetwork/temperature_forecasting/data/intermediate/feature_importance_{task_name}')
 
                 # 画图显示
                 Visualization.plot_barh(x=importance_sorted['feature'], y=importance_sorted['importance'])
@@ -189,7 +189,7 @@ def dataset_to_numpy(dataset, cat_columns, output_configs):
 
 
 # if __name__ == '__main__':
-#     df = pd.read_excel('/Users/shibo/Python/NeuralNetwork/temperature_forecasting/data/raw/Workbook1.xlsx')
+#     df = pd.read_excel('/Users/shibo/AL/NeuralNetwork/temperature_forecasting/data/raw/Workbook1.xlsx')
 #     print(df)
 #     output_config = {
 #         'T': {'type': 'regression',

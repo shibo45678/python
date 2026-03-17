@@ -19,7 +19,7 @@ class DeploymentManager:
         self.window_config = window_config
         self.window_generator= window_generator
 
-    def save(self, deployment_path='/Users/shibo/Python/NeuralNetwork/deployment_package/saved_model'):
+    def save(self, deployment_path='/Users/shibo/AL/NeuralNetwork/deployment_package/saved_model'):
 
         # 创建部署目录
         self.deploy_path = Path(deployment_path)
@@ -229,7 +229,7 @@ class DeploymentManager:
                             'median':stats.median.tolist()
                         })
             s = pd.DataFrame(statistics)
-            s.to_csv('/Users/shibo/Python/NeuralNetwork/temperature_forecasting/data/intermediate/scaler.csv')
+            s.to_csv('/Users/shibo/AL/NeuralNetwork/temperature_forecasting/data/intermediate/scaler_info.csv')
 
         if trans_type == 'CategoricalEncoding':
             encoders = getattr(transformer,'encoders_')

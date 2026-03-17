@@ -323,10 +323,6 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         if keras_files:
             keras_files.sort(key=os.path.getmtime, reverse=True)
             model = tf.keras.models.load_model(keras_files[0])
-            # logger.debug("\n加载的模型:"
-            # logger.debug(f"  优化器: {model.optimizer}")
-            # logger.debug(f"  Loss: {model.loss}")
-            # logger.debug(f"  Metrics: {model.metrics}")  # 多任务的metrics 也可以打开 <CompileMetrics name=compile_metrics>]
             return model
         else:
             raise FileNotFoundError(

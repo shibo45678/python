@@ -1,4 +1,4 @@
-# /Users/shibo/Python/NeuralNetwork/temperature_forecasting/tests/conftest.py
+# /Users/shibo/AL/NeuralNetwork/temperature_forecasting/tests/conftest.py
 import sys
 import os
 

@@ -16,7 +16,7 @@ import copy
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from training.neural_network_controller import TimeSeriesEstimator
-from trained.model_post_processor import TimeSeriesPostProcessor, MetricsCalculator
+from trained.model_postprocessor import TimeSeriesPostProcessor, MetricsCalculator
 from pipelines.preprocess_pipeline import CompletePreprocessor
 from data.data_preprocessing import TimeSeriesSplitter
 from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, DeleteUselessCols, ProblemColumnsFixed,
@@ -222,11 +222,11 @@ def main():
                   }},
         # 直接main.py文件继续训练（至stage)
         'continue_from': # None,
-        '/Users/shibo/Python/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage0',
+        '/Users/shibo/AL/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage2',
 
         # continue_training.py文件的继续训练结果（至epoch)
         'final_best_model': None,
-        # '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
+        # '/Users/shibo/AL/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage0/epoch_22'
     }}
 
     # multi_lstm_model_config2 = {**base_lstm_model_config, **{
@@ -249,12 +249,12 @@ def main():
     #
     #     # 首次训练配置：continue_from：None / 注意余弦配置
     #     'continue_from':None,
-    #      # '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_233439/tf_checkpoints_stage0',
+    #      # '/Users/shibo/AL/NeuralNetwork/saved_model/multi_lstm2*_20260305_233439/tf_checkpoints_stage0',
     #
     #     # 使用main.py继续训练（None)
     #     # 直接从continue_training.py加载训练完的最佳模型(带epoch的path)
     #     'final_best_model': None
-    #      # '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
+    #      # '/Users/shibo/AL/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
     # }}
 
     data = {'train_data': features_temp_train, 'val_data': features_temp_val}  # 训练要求验证集
@@ -264,7 +264,7 @@ def main():
 
     # 并行训练和预测
     def train_single_config(config, X, y, preprocessor,
-                            save_dir=None, calc_metrics=True, original_data_no_scaled=None, original_data_scaled=None,
+                            calc_metrics=True, original_data_no_scaled=None, original_data_scaled=None,
                            ):
         """
         单个模型的训练和预测流程
@@ -298,7 +298,7 @@ def main():
             postprocessor = TimeSeriesPostProcessor(
                 {'model_name': model_name,
                  'preprocessor': preprocessor,
-                 'save_dir': save_dir,
+                 'save_dir': '/Users/shibo/AL/NeuralNetwork/saved_pipeline_states',
                  'task_names': list(config.get('output_config').keys()),
                  'output_width': config.get('output_width', 1),
                  'time_col_name': config.get('time_column', 'Date Time')
@@ -368,17 +368,17 @@ def main():
             predict_window_, predict_window_config = estimator._forecast_window_generator()
             best_checkpoint = estimator.best_checkpoint  # 'saved_model/multi_lstm1_20260104_143043/tf_checkpoints/model_epoch_2/'
 
-            if save_dir:
-                deployment = DeploymentManager(
-                    model_name=config['model_type'],
-                    bestpoint=best_checkpoint,
-                    preprocessor=preprocessor,
-                    postprocessor=postprocessor,
-                    model_config=config,
-                    window_config=predict_window_config,
-                    window_generator=predict_window_
-                )
-                deployment.save('./deployment_package')
+
+            deployment = DeploymentManager(
+                model_name=config['model_type'],
+                bestpoint=best_checkpoint,
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+                model_config=config,
+                window_config=predict_window_config,
+                window_generator=predict_window_
+            )
+            deployment.save('./deployment_package')
 
             return {
                 'model_name': model_name,
@@ -408,7 +408,6 @@ def main():
         futures = [executor.submit(train_single_config, config, X=data, y=None, preprocessor=preprocessor,
                                    original_data_scaled=features_temp_test,  # 预处理后的测试集数据（时间列处理，采样，标准化）
                                    original_data_no_scaled=valid_df_test,  # 预处理前的测试集数据（时间列处理，采样）
-                                   save_dir='/Users/shibo/Python/NeuralNetwork/saved_model_state',
                                    )
                    for config in configs]
 

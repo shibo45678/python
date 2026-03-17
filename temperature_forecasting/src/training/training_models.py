@@ -4,7 +4,7 @@ import random
 import cloudpickle
 import numpy as np
 from .neural_network_tool import ModelConfigManager
-
+from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 from evaluation.model_visualization import history_plot
 import os
@@ -61,7 +61,7 @@ class TrainingMultiModel:
         2. 继续训练：
             basic_dir 是None
             model 为空，函数内部加载load .keras文件来（不需要新构建）
-            continue_from='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2_20260206_222944/tf_checkpoints_stage1'
+            continue_from='/Users/shibo/AL/NeuralNetwork/saved_model/multi_lstm2_20260206_222944/tf_checkpoints_stage1'
 
         trainset, valset ：训练集，既包括X,也包括标签y
         early_stop_patience: 多少轮监控指标无变化就停止，融合在最佳模型类里，不用单独EarlyStopping
@@ -108,7 +108,7 @@ class TrainingMultiModel:
             tf_checkpoint_stage_dir = os.path.join(match.group(1), f'tf_checkpoints_stage{stage_number}')
             os.makedirs(tf_checkpoint_stage_dir, exist_ok=True)
 
-            manager = SimpleTrainingManager(experiment_dir=continue_from, stage=stage_number - 1)
+            manager = SimpleTrainingManager(continue_dir=continue_from,continue_stage=stage_number-1)
             inner_epoch, model_ = manager.load_latest_checkpoint()
 
             # 创建新的编译器
@@ -153,7 +153,8 @@ class TrainingMultiModel:
                                                        patience=early_stop_patience,
                                                        check_save_mode=check_save_mode,
                                                        gap_tolerance_ratio=gap_tolerance_ratio,
-                                                       min_gap_threshold=min_gap_threshold)
+                                                       min_gap_threshold=min_gap_threshold,
+                                                       total_epochs = total_epochs)
 
         """学习率-固定 ForceLRCallback"""
         force_callback = ForceLRCallback()
@@ -278,29 +279,30 @@ class SimpleTrainingManager:
     """继续训练管理器"""
 
     def __init__(self,
-                 experiment_dir='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2#_20260208_154953/tf_checkpoints_stage0',
-                 stage: int = 2):
+                 continue_dir='/Users/shibo/AL/NeuralNetwork/saved_model/multi_lstm2#_20260208_154953/tf_checkpoints_stage0',
+                 continue_stage: int = 0): # 上次
 
-        self.experiment_dir = experiment_dir
-        self.stage = stage
+        self.continue_dir = continue_dir
+        self.stage = continue_stage
         """
         experiment_dir :带时间戳+阶段stage 的基准模型目录
         stage：标明继续训练是哪个阶段keras
         """
 
     def load_latest_checkpoint(self):
-        if self.experiment_dir is None:
+        if self.continue_dir is None:
             raise ValueError(f"继续训练的stage目录为空，检查配置continue_from是否为None")
 
         latest_epoch = 0
         latest_checkpoint = None
+        self.continue_dir_ =f"{self.continue_dir}/"
 
-        for item in os.listdir(self.experiment_dir):
+        for item in os.listdir(self.continue_dir_):
             if item.startswith('epoch_'):
                 try:
                     epoch = int(re.search(r'epoch_(\d+)', item).group(1))  # 从0开始的轮数 ,取后一位为下一stage的起始位置
 
-                    checkpoint = os.path.join(self.experiment_dir, f'epoch_{epoch}')
+                    checkpoint = os.path.join(self.continue_dir_, f'epoch_{epoch}')
                     if epoch > latest_epoch and os.path.exists(
                             os.path.join(checkpoint, f'model_stage{self.stage}.keras')):  # 只在keras基础上更新
                         latest_epoch = epoch
@@ -322,8 +324,8 @@ class SimpleTrainingManager:
 class CustomCheckpointCallback(tf.keras.callbacks.Callback):
     def __init__(self, checkpoint_dir, stage_number,
                  initial_epoch, metric=None,
-                 min_delta=1e-6, patience=10, check_save_mode=1, gap_tolerance_ratio=1.3, min_gap_threshold=0.0015
-
+                 min_delta=1e-6, patience=10, check_save_mode=1, gap_tolerance_ratio=1.3, min_gap_threshold=0.0015,
+                 total_epochs=50
                  ):
         """
             Args:
@@ -364,6 +366,7 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
         self.check_save_mode = check_save_mode
         self.min_gap_threshold = min_gap_threshold
         self.gap_tolerance_ratio = gap_tolerance_ratio
+        self.total_epochs=total_epochs
 
         os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -487,7 +490,8 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
                 self._update_best(current_val_loss, current_loss, current_val_mae, epoch)
                 self.patience_counter = 0
                 logger.debug(
-                    f"显著改进！保存最佳模型，验证损失:{current_val_loss:.6f}，验证MAE：{current_val_mae:.6f}")
+                    f"显著改进！保存最佳模型，验证损失:{current_val_loss:.6f}，验证MAE：{current_val_mae:.6f}"
+                    f"当前gap(val-train):{(current_val_loss - current_loss):.5f} ")
 
             # 微弱下降：下降量在 [0, min_delta) 之间
             elif self.best_val_loss - current_val_loss >= 0:
@@ -522,7 +526,7 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             self.model.stop_training = True
             logger.info(
                 f"早停于 epoch {epoch}，最佳验证损失: {self.best_val_loss:.6f} ，"
-                f"最佳验证MAE：{self.best_val_mae} ,Val Loss Gap {self.best_gap:.5f} ")
+                f"最佳验证MAE：{self.best_val_mae:.6f}。 ")
             return True
         return False
 
@@ -608,20 +612,16 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
         return checkpoint_epoch_dir
 
     def on_train_end(self, logs=None):
-        """训练结束时打印早停信息，保存配置和训练历史"""
-        if self.stopped_epoch > 0:
-            logger.info(f"早停于 epoch {self.stopped_epoch}")
+        # 训练结束时打印早停信息
+        if self.stopped_epoch > 0 :
+            logger.info(f"早停于 inner_epoch {self.stopped_epoch}")
             logger.info(
                 f"最佳模型 inner_epoch {self.best_epoch} ,最佳验证损失: {self.best_val_loss:.6f}，最佳验证MAE：{self.best_val_mae} ")
 
-            if self.best_model_path is None:
-                match = re.search(r'(.+)tf_checkpoints_stage(\d+)', self.checkpoint_dir)
-                pre_path = match.group(1)
-                pre_stage = self.stage_number - 1
-                self.best_model_path = os.path.join(pre_path, f'tf_checkpoints_stage{pre_stage}',
-                                                    f'epoch_{self.initial_epoch - 1}')
-                logger.info(f"本次训练没有生成最佳模型，最佳模型仍然是：上期{self.best_model_path}")
+            self.get_best_model_path()
 
+
+    @contextmanager
     def _suppress_output(self):
         """抑制模型保存时的输出"""
         old_stdout = sys.stdout  # 备份原来的"屏幕输出通道"
@@ -637,6 +637,8 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             sys.stderr = old_stderr
 
     def get_best_model_info(self):
+        # 没到早停，训练总轮数直接结束，不会走on_train_end，但是会走这里
+        self.get_best_model_path()
         return {
             'best_epoch': self.best_epoch,
             'best_val_loss': self.best_val_loss,
@@ -645,6 +647,16 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             'patience_counter': self.patience_counter,
             'stopped_epoch': self.stopped_epoch
         }
+
+    def get_best_model_path(self):
+        if self.best_model_path is None:
+            match = re.search(r'(.+)tf_checkpoints_stage(\d+)', self.checkpoint_dir)
+            pre_path = match.group(1)
+            pre_stage = self.stage_number - 1
+            self.best_model_path = os.path.join(pre_path, f'tf_checkpoints_stage{pre_stage}',
+                                                f'epoch_{self.initial_epoch - 1}')
+            logger.info(f"本次训练没有生成最佳模型，最佳模型仍然是：上期{self.best_model_path}")
+
 
 
 class CosineAnnealingWarmRestarts(tf.keras.callbacks.Callback):

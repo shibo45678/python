@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def continue_training(
-        pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260304_092539',
+        pre_path='/Users/shibo/AL/NeuralNetwork/saved_model/multi_lstm2*_20260304_092539',
         checkpoint_dir: str = 'tf_checkpoints_stage1',
         continue_inner_epoch: int = 0,
         update_lr: Union[str, float] = 'from_history',
@@ -191,7 +191,7 @@ def find_latest_checkpoint(stage_dir, extension: str = '.keras'):
 
     checkpoint_files = []
     for root, dirs, files in os.walk(stage_dir):
-        # root = '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2_20260206_222944'
+        # root = '/Users/shibo/AL/NeuralNetwork/saved_model/multi_lstm2_20260206_222944'
         # dirs = ['tf_checkpoints','logs']  一次遍历只处理当前层级
         # files = []  # 顶层目录没有文件
         for file in files:
@@ -242,7 +242,7 @@ def get_initial_learning_rate(continue_inner_epoch_, dir, model_name, stage_numb
 
         Args:
         continue_inner_epoch_: 起始epoch
-        dir : continue_dir = '/Users/shibo/Python/NeuralNetwork/lstm..../continue_training'
+        dir : continue_dir = '/Users/shibo/AL/NeuralNetwork/lstm..../continue_training'
         method= 'from_history' / 'fixed '固定
     """
     if type(method) == float:
@@ -460,8 +460,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     model, _, _, save_model_dir, new_history = continue_training(
-        pre_path='/Users/shibo/Python/NeuralNetwork/saved_model/single_lstm1_20260316_090043',
-        checkpoint_dir='tf_checkpoints_stage0',
+        pre_path='/Users/shibo/AL/NeuralNetwork/saved_model/single_lstm1_20260316_090043',
+        checkpoint_dir='tf_checkpoints_stage2',
         continue_inner_epoch=0,  # 0自动推
         save_model_dir=None,  # 带stage
         update_lr=0.00015,  # float: 0.00035/ str : 'from_history'

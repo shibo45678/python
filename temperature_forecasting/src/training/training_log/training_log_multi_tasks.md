@@ -218,11 +218,11 @@ learning_rate: 8.7500e-05
                    'units': 1}}
         
         # 首次训练配置：continue_from：None / 注意余弦配置
-        'continue_from':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_233439/tf_checkpoints_stage0',
+        'continue_from':'/Users/shibo/AL/NeuralNetwork/saved_model/multi_lstm2*_20260305_233439/tf_checkpoints_stage0',
         
         # 使用main.py继续训练（None)
         # 直接从continue_training.py加载训练完的最佳模型(带epoch的path)
-        'final_best_model':'/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
+        'final_best_model':'/Users/shibo/AL/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
     }}
 
 

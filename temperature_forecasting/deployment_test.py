@@ -13,7 +13,7 @@ from predictor import TrainedModelPredictor
 
 
 def run_prediction(input_data):
-    deployment_path = '/Users/shibo/Python/NeuralNetwork/deployment_package'
+    deployment_path = '/Users/shibo/AL/NeuralNetwork/deployment_package'
     if not os.path.exists(deployment_path):
         print(f"❌ 部署包不存在: {deployment_path}")
         return
@@ -30,7 +30,7 @@ def run_prediction(input_data):
         for task_name, pred in predictions.items():
             task_name = pd.DataFrame(pred, columns=[f'{task_name}_{j}' for j in range(pred.shape[1])])
             task_name.to_csv(
-                f'/Users/shibo/Python/NeuralNetwork/temperature_forecasting/data/intermediate/test_{task_name}_predictions.csv',
+                f'/Users/shibo/AL/NeuralNetwork/temperature_forecasting/data/intermediate/test_{task_name}_predictions.csv',
                 index=False)
 
     except Exception as e:
