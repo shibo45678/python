@@ -111,8 +111,6 @@ class ModelEvaluation:
             if isinstance(true_labels, dict):
                 logger.debug(f"true_labels特征数: {len(true_labels.keys())}")
 
-            logger.debug(f"predictions类型: {type(predictions)}")
-
             for i, (task_name, config) in enumerate(self.output_configs.items()):
                 if i < len(predictions):
                     pred = predictions[task_name]   # 第i个输出层的预测

@@ -15,7 +15,8 @@ from utils.tensorflow_config import TensorFlowConfig
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from models.NeuralNetwork import TimeSeriesEstimator, TimeSeriesPostProcessor, MetricsCalculator
+from training.neural_network_controller import TimeSeriesEstimator
+from trained.model_post_processor import TimeSeriesPostProcessor, MetricsCalculator
 from pipelines.preprocess_pipeline import CompletePreprocessor
 from data.data_preprocessing import TimeSeriesSplitter
 from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, DeleteUselessCols, ProblemColumnsFixed,
@@ -29,8 +30,8 @@ from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, D
                                    StatisticsOutlierDetector, RemoveNanHandler)
 from data.data_preprocessing import SimpleTimeSampler
 from data.feature_engineering import (WeatherGenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
-                                      UnifiedFeatureScaler, CategoricalEncoding, OrdinalCategoricalEncoder,
-                                      CustomTransformer, CustomQuantileTransformer)
+                                      UnifiedFeatureScaler, OrdinalCategoricalEncoder,
+                                      CustomTransformer)
 from data.exploration import VisualizationForNeural
 from deployment import DeploymentManager
 # from predictor import TrainedModelPredictor
@@ -76,7 +77,7 @@ def main():
         {'custom': {'columns': ['auto_handle_remain'], 'handle_method': ['ignore'], 'skip_handle': [],
                     'detect_function': partial(detector.recommend_detection_method)}}
     ],
-        'generate_outlier_indicator': ['T'],
+        'generate_outlier_indicator': [], # 选填 label
     }
 
     categorical_outliers_config = {
@@ -111,7 +112,6 @@ def main():
 
     }
 
-    # 先初始化 再延迟计算（lazy evaluation）
     preparation_configs = [
         {'obj_list': [DescribeData(), DeleteUselessCols()], 'len_change': False},
         {'obj_list': [RemoveDuplicates(download_config=download_duplicates_config)], 'len_change': True},
@@ -134,7 +134,7 @@ def main():
          'len_change': True},
 
         {'obj_list': [GenerationFromTimeseries(time_column='Date Time', plot=False),
-                      WeatherGenerationFromNumeric(selected_columns=['wd', 'wv', 'max. wv', 'T', 'rh', 'Tdew'],
+                      WeatherGenerationFromNumeric(selected_columns=['wd', 'wv', 'max. wv', 'T', 'rh', 'Tdew','VPdef','hour_sin','is_night'],
                                                    create_statistical=True, create_interactions=True)],
          'len_change': False},
 
@@ -142,7 +142,7 @@ def main():
 
         {'obj_list': [BasedOnCorrSelector(pass_through=True),
                       CustomTransformer(model_name='lstm', pass_through=False,
-                                        power_columns=['rh', 'wv_y', 'max. wv_y'],
+                                        power_columns=['rh','wv_y', 'max. wv_y'],
                                         power_method='yeo-johnson', power_standardize=False,
                                         power_skip=['hour_cos', 'Season_cos', 'day_of_year_sin', 'day_of_year_cos',
                                                     'hour_sin', 'is_night', 'Season_sin'],
@@ -151,7 +151,7 @@ def main():
                       UnifiedFeatureScaler(method_config=scaling_config, algorithm='lstm'),  # 自动根据数据分布及算法类型进行推荐标准化
                       OrdinalCategoricalEncoder(encode_order_cols={
                           'segments': ['极寒', '严寒', '寒冷', '冰点下', '低温', '凉', '舒适', '暖', '热']},
-                          handle_unknown='use_encoded_value', unknown_value=-1),
+                          handle_unknown='use_encoded_value', unknown_value=-1,pass_through=True), # 特征取消
                       VisualizationForNeural(pass_through=True),
                       ], 'len_change': False},
     ]
@@ -192,22 +192,21 @@ def main():
                               'units': [256],  # len控制lstm的层数
                               'return_sequences': [False],
                               'verbose': 2,
-                              'total_epochs':1,
+                              'total_epochs':50,
 
-                              'early_stop_patience': 10,
+                              'early_stop_patience': 15,
                               'check_save_mode': 2,
                               'gap_tolerance_ratio': 1.07,
                               'min_gap_threshold': 0.002,
 
-                              'min_delta': 1e-4,
+                              'min_delta': 1e-4, # 1e-4
                               'learning_rate': 0.0003,
-                              'cos_min_lr': 1e-6,
+                              'cos_min_lr': 1e-5,
                               'cos_total_epochs': 25,
                               'cos_warmup_epochs': 5, # 首次训练支持restart
 
                               'weight_decay': 1e-5,
                               'clipnorm': 10,  # 首次fit前先诊断 只拦截 >10.0 的异常尖峰
-                              # 'reduce_lr_patience': 3,
                               }
 
     single_lstm_model_config1 = {**base_lstm_model_config, **{
@@ -222,8 +221,8 @@ def main():
                   'units': 1,
                   }},
         # 直接main.py文件继续训练（至stage)
-        'continue_from': None,
-        # '/Users/shibo/Python/NeuralNetwork/saved_model/single_lstm1_20260306_114256/tf_checkpoints_stage0',
+        'continue_from': # None,
+        '/Users/shibo/Python/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage0',
 
         # continue_training.py文件的继续训练结果（至epoch)
         'final_best_model': None,
@@ -249,11 +248,13 @@ def main():
     #                'units': 1}},
     #
     #     # 首次训练配置：continue_from：None / 注意余弦配置
-    #     'continue_from': '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_233439/tf_checkpoints_stage0',
+    #     'continue_from':None,
+    #      # '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_233439/tf_checkpoints_stage0',
     #
     #     # 使用main.py继续训练（None)
     #     # 直接从continue_training.py加载训练完的最佳模型(带epoch的path)
-    #     'final_best_model': '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
+    #     'final_best_model': None
+    #      # '/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2*_20260305_235745/tf_checkpoints_stage0/epoch_22'
     # }}
 
     data = {'train_data': features_temp_train, 'val_data': features_temp_val}  # 训练要求验证集
@@ -321,8 +322,8 @@ def main():
                 task_config=config.get('output_config'),
                 output_width=config.get('output_width'),
                 pipeline_name='pipeline_6',
-                scale_step_names=['engineer_3', 'engineer_4'],
-                transform_step_name='engineer_2')
+                scale_step_names=['engineer_2', 'engineer_3'],
+                transform_step_name='engineer_1')
 
             # 6. 添加时间戳
             final_pred_results, predictions_dict = postprocessor.add_timestamps(
@@ -399,13 +400,12 @@ def main():
                 'config': config
             }
 
-    configs = [single_lstm_model_config1]  # multi_lstm_model_config2
+    configs = [single_lstm_model_config1]  #  multi_lstm_model_config2
 
     failed_configs = []
     trained_models = []
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(train_single_config, config, X=data, y=None, preprocessor=preprocessor,
-                                   # data=features_temp_test,  # 预处理后的 测试集数据
                                    original_data_scaled=features_temp_test,  # 预处理后的测试集数据（时间列处理，采样，标准化）
                                    original_data_no_scaled=valid_df_test,  # 预处理前的测试集数据（时间列处理，采样）
                                    save_dir='/Users/shibo/Python/NeuralNetwork/saved_model_state',

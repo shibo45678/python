@@ -1,11 +1,12 @@
 # 特征重要性分析（排列重要性、SHAP等）
+import copy
 from collections import defaultdict
 
 import numpy as np
 import pandas as pd
 import shap
 
-from data import Visualization
+from data import Visualization, EnhancedWindowGenerator
 from .model_evaluation import ModelEvaluation
 import logging
 
@@ -19,20 +20,20 @@ class FeatureImportance:
     """
     1. 排列重要性: (样本数, 时间步数, 特征数)
     评估第 i 个特征，按样本打乱（但保持时间序列完整性）在不同样本之间随机交换。
-    样本 A  [a1, a2, a3] ，样本 B 的是 [b1, b2, b3] 打乱后：
-    样本 A 可能得到 [b1, b2, b3]，样本 B 得到 [a1, a2, a3]。
-    保留每个样本的时间结构（趋势、周期）但样本之间的对应关系被破坏。
+    样本 0  [a1, a2, a3] ，样本 1 的是 [a4, a5, a6] 打乱后：
+    样本 0 可能得到 [a4, a5, a6]，样本 1 得到 [a1, a2, a3]。
+    保留每个样本的时间结构（趋势、周期）但样本之间对应关系被破坏(其他特征和label保持不变）
 
-    优点：保留了该特征的时间自相关性，只破坏了该特征与目标变量之间的关联（因为特征值现在属于错误的样本）。
-
-    2. SHAP:
+    优点：保留了该特征的时间自相关性，只破坏了该特征与目标变量之间的关联。
+    
+    2. SHAP:待实现
     """
 
     def permutation_importance_lstm(self, model, valsets, output_configs, num_feature_names, cat_feature_names,
                                     model_name, n_repeats=5):
         """计算 LSTM 的排列重要性
             model: 训练好的 LSTM 模型
-            valsets: 验证数据 ((num_inputs, cat_input1，cat_input2...), {labels})
+            valsets: 验证数据 ((num_inputs, cat_input1，cat_input2...), {labels}) / ((num_inputs,), {labels})  TensorSpec
                      解包成 X (3D: [样本, 时间步, 特征]) ； y( [样本，时间步，1] )
             num_feature_names: 传入模型的数值特征
             cat_feature_names: 传入模型的分类特征
@@ -41,13 +42,16 @@ class FeatureImportance:
         if model is None:
             raise ValueError(f'最佳模型没有正确加载')
 
-        # feat_num:(样本数, 时间步, 特征数),feat_cat:(样本数, 时间步) 或 (样本数,)
-        (feat_num, feat_cat), y_val = dataset_to_numpy(dataset=valsets,
-                                                       cat_columns=cat_feature_names,
-                                                       output_configs=output_configs)
+        feature_names = num_feature_names + cat_feature_names
+
+        X_val, y_val = dataset_to_numpy(dataset=valsets,
+                                        cat_columns=cat_feature_names,
+                                        output_configs=output_configs)
+        feat_num = X_val[0] # ndarray (13961,6,27)
+        feat_cat = X_val[1:] # list [ ndarray(13961,6)]
 
         # 转换后的 NumPy 结构完全可以用于 model.predict，只需以列表形式传入多个输入
-        y_pred = model.predict([feat_num, feat_cat])
+        y_pred = model.predict(X_val) # list
 
         if isinstance(y_val, dict):
             # 获取X_val对应顺序的feature_names() num,cat，label
@@ -63,27 +67,46 @@ class FeatureImportance:
                                                             task_name=task_name)
                     baseline_metric = res_old.get(metric)
                 elif task_type == 'binary_classification':
-                    baseline_metric = 5e-5
+                    eval = ModelEvaluation(output_configs=output_configs, model_name=model_name)
+                    res_old = eval._analyze_binary_classification_task(predictions=y_pred.get(task_name), true_values=true_values,
+                                                            task_name=task_name)
+                    baseline_metric = res_old.get(metric)
                 else:
-                    baseline_metric = 5e-5
+                    eval = ModelEvaluation(output_configs=output_configs, model_name=model_name)
+                    res_old = eval._analyze_multiclass_task(predictions=y_pred.get(task_name),
+                                                                       true_values=true_values,
+                                                                       task_name=task_name)
+                    baseline_metric = res_old.get(metric)
 
                 feat_dict = {}
+                j = len(num_feature_names)
+
                 for i, feat_name in enumerate(feature_names):
                     scores = []
                     logger.debug(
-                        f"                                              {feat_name} 重要性计算                           ")
+                        f"===================================================== {feat_name} 重要性计算 =====================================================")
                     for _ in range(n_repeats):
-                        X_num_permuted = feat_num
-                        X_cat_permuted = feat_cat
+                        feat_num_copy = copy.deepcopy(feat_num)
+                        X_num_permuted = copy.deepcopy(feat_num)  # ndarry
 
-                        perm_indices = np.random.permutation(feat_num.shape[0])
+                        # 变动后的“对应特征”的索引数据(0) 是由perm_indices所显示的原索引数据(8)替换
+                        perm_indices = np.random.permutation(feat_num_copy.shape[0])
 
-                        if i < len(feature_names) - 1:
-                            X_num_permuted[:, :, i] = feat_num[perm_indices, :, i]  # 覆盖
-                        else:
-                            X_cat_permuted[:, :] = feat_cat[perm_indices, :]
+                        if cat_feature_names: # 有分类特征（多+单）
+                            feat_cat_copy = copy.deepcopy(feat_cat)
+                            X_cat_permuted = copy.deepcopy(feat_cat)
 
-                        y_pred_perm = model.predict([X_num_permuted, X_cat_permuted], verbose=0)
+                            if i < j :
+                                X_num_permuted[:, :, i] = feat_num_copy[perm_indices, :, i]
+                            else:
+                                k = i-j
+                                X_cat_permuted[k][:, :] = feat_cat_copy[k][perm_indices, :]
+
+                            y_pred_perm = model.predict([X_num_permuted, *X_cat_permuted], verbose=0)
+                        else :
+                            # 无分类特征
+                            X_num_permuted[:, :, i] = feat_num_copy[perm_indices, :, i]
+                            y_pred_perm = model.predict([X_num_permuted], verbose=0)
 
                         eval = ModelEvaluation(output_configs=output_configs, model_name=model_name)
                         res_perm = eval._analyze_regression_task(predictions=y_pred_perm.get(task_name),
@@ -115,7 +138,10 @@ class FeatureImportance:
             return importance_dict
 
 
-def dataset_to_numpy(dataset,  cat_columns, output_configs):
+
+
+
+def dataset_to_numpy(dataset, cat_columns, output_configs):
     features_list = []
     labels_list = defaultdict(list)
     labels_all = {}
@@ -123,15 +149,15 @@ def dataset_to_numpy(dataset,  cat_columns, output_configs):
     for batch in dataset:
         if cat_columns:
             features_tuple, labels_dict = batch
-            feat_num = features_tuple[0]
+            feat_num = [features_tuple[0].numpy()]  # list
             feat_cat = []
 
             # 处理多分类 # （数值,分类1，分类2）
             for i in range(1, len(cat_columns) + 1):
                 feat_cat.append(features_tuple[i].numpy())
-                feat_cat_tuple = tuple(feat_cat)
-                feature_tuple = tuple(feat_num.numpy()) + feat_cat_tuple
-                features_list.append(feature_tuple)
+
+            feature_tuple = tuple(feat_num + feat_cat)  # 合并list后，直接转为tuple(list)
+            features_list.append(feature_tuple)
 
         else:
             (feat_num,), labels_dict = batch
@@ -141,7 +167,7 @@ def dataset_to_numpy(dataset,  cat_columns, output_configs):
             labels_list[task_name].append(labels_dict.get(task_name))
 
     # 数值列处理
-    feat_num_all = np.concatenate([f[0] for f in features_list], axis=0)
+    feat_num_all = np.concatenate([f[0] for f in features_list], axis=0)  # ndarray (55,6,4)
 
     # 标签列处理
     for task_name, values_list in labels_list.items():
@@ -150,13 +176,63 @@ def dataset_to_numpy(dataset,  cat_columns, output_configs):
     # 分类列处理
     if cat_columns:
         i = 1
-        feat_cat_all = tuple()
+        feat_input = [feat_num_all]
         while i < len(cat_columns) + 1:
-            feat_cat_all = feat_cat_all + (np.concatenate([f[i] for f in features_list], axis=0))
+            cat = np.concatenate([f[i] for f in features_list], axis=0)  # ndarray (55,6)
+            feat_input.append(cat)  # 别赋值
             i += 1
-        return (feat_num_all, feat_cat_all), labels_all
+        return feat_input, labels_all # feat_input是list，包括feat_num_all 和 每个cat
     else:
-        return (feat_num_all,), labels_all
+        # 主要解包后别直接array取下角标，这就又下了一个维度，直接feat_num_all不行
+        # [feat_num_all] 或者（feat_num_all,) 都可以
+        return [feat_num_all], labels_all
+
 
 # if __name__ == '__main__':
+#     df = pd.read_excel('/Users/shibo/Python/NeuralNetwork/temperature_forecasting/data/raw/Workbook1.xlsx')
+#     print(df)
+#     output_config = {
+#         'T': {'type': 'regression',
+#               'loss': 'mse',
+#               'metrics': ['mae'],
+#               'loss_weights': 1,
+#               'units': 1,
+#               }}
+#     window_gen = EnhancedWindowGenerator(
+#         mode='train',
+#         input_width=6,
+#         label_width=5,
+#         shift=24,
+#         label_columns=['T'],  # 'T','Tpot'
+#         numeric_columns=['p', 'T', 'Tpot'],
+#         categorical_columns=[],
+#         output_configs=output_config,
+#         batch_size=16
+#     )
+#
+#     window_data = window_gen.createDataset(df)
+#     X_val, y_val = dataset_to_numpy(dataset=window_data, cat_columns=[], output_configs=output_config)
+#     feature_names = ['p', 'T', 'Tpot']
+#     feat_num = X_val[0]
+#     feat_cat = X_val[1:]
+#
+#
+#
+#     j =len(['p', 'T', 'Tpot'])
+#     for i, feat_name in enumerate(feature_names):
+#         feat_num_copy = copy.deepcopy(feat_num)
+#         feat_cat_copy = copy.deepcopy(feat_cat)
+#
+#         X_num_permuted = copy.deepcopy(feat_num) # ndarry
+#         X_cat_permuted = copy.deepcopy(feat_cat) # tuple(cat...)
+#
+#         perm_indices = np.random.permutation(feat_num_copy.shape[0])
+#
+#         if i < j :
+#             X_num_permuted[:, :, i] = feat_num_copy[perm_indices, :, i]
+#         else:
+#             k = i - j
+#             X_cat_permuted[k][:, :] = feat_cat_copy[k][perm_indices, :]
+
+
 

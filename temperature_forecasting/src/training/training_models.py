@@ -3,8 +3,7 @@ import math
 import random
 import cloudpickle
 import numpy as np
-
-# from keras.src.callbacks import LearningRateScheduler
+from .neural_network_tool import ModelConfigManager
 
 logger = logging.getLogger(__name__)
 from evaluation.model_visualization import history_plot
@@ -24,6 +23,255 @@ import contextlib
 import sys
 import io
 import re
+
+
+# from keras.src.callbacks import LearningRateScheduler
+
+
+class TrainingMultiModel:
+    def __init__(self, history_plot=True):
+        self.history_plot = history_plot
+
+    def training_model(self, model_name: str, trainset, valset,
+                       learning_rate,
+                       cos_min_lr, cos_total_epochs, cos_warmup_epochs,
+                       total_epochs, verbose: int = 2, early_stop_patience=10,
+                       check_save_mode=1,
+                       gap_tolerance_ratio=1.3,
+                       min_gap_threshold=0.0015,
+                       output_config=None,
+                       weight_decay=1e-5,
+                       clipnorm=10,
+
+                       monitor=None, min_delta=1e-6,
+                       basic_dir: str = None,
+                       continue_from: str = None,
+                       model=None
+
+                       # reduce_lr_patience=2, # Reduce学习率才用
+
+                       ):
+        """
+        多任务模型：
+
+        1. 首次训练：
+            basic_dir !=None (带stage1的已存在keras文件目录)
+            model 是构建的 self.training_model_（tf.keras.models）
+            continue_from=None
+        2. 继续训练：
+            basic_dir 是None
+            model 为空，函数内部加载load .keras文件来（不需要新构建）
+            continue_from='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2_20260206_222944/tf_checkpoints_stage1'
+
+        trainset, valset ：训练集，既包括X,也包括标签y
+        early_stop_patience: 多少轮监控指标无变化就停止，融合在最佳模型类里，不用单独EarlyStopping
+        monitor：最佳模型的监控指标（在单任务里不需要参数）
+                None（默认）：多任务-代表监控总体验证损失val_loss（主），总提验证MAE val_mae(辅）
+                str('T'):多任务-指定监控的某特征
+        cos_total_epochs: 1周期余弦退火预热的总轮数
+        cos_warmup_epochs：4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
+        余弦退火（首次训练模式，支持restart_epochs重启，继续训练不支持，默认状态None）
+
+        """
+
+        if continue_from is None and basic_dir is not None and model is not None:
+            os.makedirs(basic_dir, exist_ok=True)
+
+            stage_number = 0
+            inner_epoch = 0
+            tf_checkpoint_stage_dir = os.path.join(basic_dir, 'tf_checkpoints_stage0')
+            os.makedirs(tf_checkpoint_stage_dir, exist_ok=True)
+            logger.info(f"首次训练模型，最佳模型将加载到:{tf_checkpoint_stage_dir}")
+
+            model_ = model
+
+            # 首次训练用 1. 余弦退火
+            cosine_callback = CosineAnnealingWarmRestarts(
+                initial_lr=learning_rate,
+                min_lr=cos_min_lr,
+                total_epochs=cos_total_epochs,
+                warmup_epochs=cos_warmup_epochs,
+                warmup_power=2.0,
+                restart_epochs=None)
+
+            cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
+                cosine_callback.optimal_cosine_annealing,
+                verbose=1)
+            logger.debug(
+                f"首次训练-余弦退火：周期总轮数 {cos_total_epochs},热身轮数cos_warmup_epochs-1： {cos_warmup_epochs - 1}")
+
+
+        # ============继续训练逻辑===============
+        else:
+            match = re.search(r"(.*)tf_checkpoints_stage(\d+)", str(continue_from))
+            stage_number = int(match.group(2)) + 1
+            tf_checkpoint_stage_dir = os.path.join(match.group(1), f'tf_checkpoints_stage{stage_number}')
+            os.makedirs(tf_checkpoint_stage_dir, exist_ok=True)
+
+            manager = SimpleTrainingManager(experiment_dir=continue_from, stage=stage_number - 1)
+            inner_epoch, model_ = manager.load_latest_checkpoint()
+
+            # 创建新的编译器
+            old_opt = model_.optimizer
+            old_config = old_opt.get_config()
+
+            new_opt = tf.keras.optimizers.AdamW(
+                learning_rate=learning_rate,
+                weight_decay=weight_decay,
+                clipnorm=clipnorm,
+                beta_1=old_config.get('beta_1', 0.9),
+                beta_2=old_config.get('beta_2', 0.999),
+                epsilon=old_config.get('epsilon', 1e-7)
+            )
+            model_ = compile_for_continue(model=model_, opt=new_opt, output_config=output_config)
+
+            logger.debug(
+                f"加载检查点 Epoch={inner_epoch + 1} 模型，已训练 {inner_epoch + 1}/{total_epochs} 轮。下一次训练 Epoch={inner_epoch + 2}")
+
+            # 继续训练用
+            cosine_callback = ContinueCosineAnnealing(
+                initial_lr=learning_rate,  # 继续训练手动修改在外层配置修改
+                min_lr=cos_min_lr,
+                total_epochs=cos_total_epochs,
+                warmup_epochs=cos_warmup_epochs,
+                warmup_power=2.0,
+                start_epoch=inner_epoch + 1)
+            cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
+                cosine_callback.optimal_cosine_annealing_with_start,
+                verbose=1)
+            logger.debug(
+                f"继续训练-余弦退火：周期总轮数 {cos_total_epochs},热身轮数cos_warmup_epochs-1： {cos_warmup_epochs - 1}")
+
+        # callbacks===========================================
+
+        """2. 自定义检查点"""
+        checkpoint_callback = CustomCheckpointCallback(checkpoint_dir=tf_checkpoint_stage_dir,
+                                                       stage_number=stage_number,
+                                                       initial_epoch=inner_epoch + 1,
+                                                       metric=monitor,
+                                                       min_delta=min_delta,
+                                                       patience=early_stop_patience,
+                                                       check_save_mode=check_save_mode,
+                                                       gap_tolerance_ratio=gap_tolerance_ratio,
+                                                       min_gap_threshold=min_gap_threshold)
+
+        """学习率-固定 ForceLRCallback"""
+        force_callback = ForceLRCallback()
+        """ """
+        """学习率-ReduceLROnPlateau"""
+
+        reduceLR_lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(
+            monitor=f'val_{monitor}_loss' if monitor is not None else 'val_loss',
+            factor=0.5,  # 学习率减半 factor=0.7: 每次减30%（衰减更慢）
+            patience=early_stop_patience,
+            min_lr=1e-7,
+            min_delta=min_delta,
+            cooldown=0,
+            verbose=2,
+            mode='min')
+
+        """3. TensorBoard日志目录"""
+        # 训练后，bash 查看 tensorboard --logdir=~/Python/NeuralNetwork/weights/logs
+        log_dir = os.path.join(tf_checkpoint_stage_dir, "board_logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+        tensorboard_callback = tf.keras.callbacks.TensorBoard(
+            log_dir=log_dir,
+            histogram_freq=1,
+            write_graph=True,
+            write_images=True,
+            update_freq='epoch'
+        )
+
+        # callbacks===========================================
+
+        # 诊断梯度
+        # probe_gradient_norm(model_, trainset, num_batches=30)
+
+        record = model_.fit(
+            trainset,
+            validation_data=valset,
+            epochs=total_epochs,  # 用户友好
+            initial_epoch=inner_epoch + 1 if inner_epoch != 0 else 0,
+            # 用户友好 内部epoch=22（从0开始）这里填Epoch23 （Keras我已经完成了23轮训练）
+            verbose=verbose,  # 设置日志显示，0为不在标准输出流输出日志信息，1为输出进度条记录 2 epoch每轮输出一行记录
+            callbacks=[
+                # 1. 学习率：余弦退火
+                cosine_lr_optimal,  # 替换ReduceLROnPlateau
+                # force_callback, # 强制学习率
+                # reduceLR_lr_scheduler,
+
+                # 2. 最佳检查点（带早停）
+                checkpoint_callback,
+                # 3. TensorBoard
+                tensorboard_callback,
+
+            ]
+        )
+        best_model_info = checkpoint_callback.get_best_model_info()
+
+        if self.history_plot:
+            save_dir = os.path.expanduser("~/Python/NeuralNetwork/temperature_forecasting/data/pics/")
+            history_plot(history=record, model_name=model_name, save_dir=save_dir)
+
+        return record, best_model_info['best_model_epoch_path']  # epoch
+
+
+class TrainingSingleModel(TrainingMultiModel):
+    def __init__(self, history_plot=False):
+        super().__init__(history_plot=history_plot)
+
+    def training_model(self, model_name: str, trainset, valset,
+                       learning_rate,
+                       cos_min_lr, cos_total_epochs, cos_warmup_epochs,
+                       total_epochs: int = 20, verbose: int = 2, early_stop_patience=5,
+                       check_save_mode=1,
+                       gap_tolerance_ratio=1.3,
+                       min_gap_threshold=0.0015,
+                       monitor=None, min_delta=1e-6, output_config=None,
+                       weight_decay=1e-5,
+                       clipnorm=20,
+                       basic_dir: str = None,
+                       continue_from: str = None,
+                       model=None
+                       ):
+        '''单任务模型：注释同 TrainingMultiModel'''
+
+        # 处理数据形状
+        def safe_map_function(x, y):
+            """安全的 map 函数，确保返回有效数据"""
+            if y is None:
+                y = tf.zeros([tf.shape(x)[0], 5, 1], dtype=tf.float32)  # 创建零值标签
+
+            if isinstance(y, dict):
+                if 'T' in y:
+                    y = y['T']
+                elif len(y) > 0:
+                    y = list(y.values())[0]  # 取第一个值（单特征的训练）
+                else:
+                    y = tf.zeros([tf.shape(x)[0], 5, 1], dtype=tf.float32)
+
+            return x, y
+
+        trainset = trainset.map(safe_map_function)
+        valset = valset.map(safe_map_function)
+
+        # 继续父类训练
+        config = {'trainset': trainset, 'valset': valset,
+                  'model_name': model_name,
+                  'learning_rate': learning_rate,
+                  'cos_min_lr': cos_min_lr,
+                  'cos_total_epochs': cos_total_epochs,
+                  'cos_warmup_epochs': cos_warmup_epochs,
+                  'total_epochs': total_epochs,
+                  'verbose': verbose, 'early_stop_patience': early_stop_patience,
+                  'check_save_mode': check_save_mode,
+                  'gap_tolerance_ratio': gap_tolerance_ratio,
+                  'min_gap_threshold': min_gap_threshold,
+                  'output_config': output_config,
+                  'monitor': monitor, 'min_delta': min_delta,
+                  'basic_dir': basic_dir,
+                  'continue_from': continue_from,
+                  'model': model}
+        return super().training_model(**config)
 
 
 class SimpleTrainingManager:
@@ -161,9 +409,9 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
                 self.best_val_loss = training_state['best_val_loss']
                 self.best_val_mae = training_state['best_val_mae']
                 self.best_epoch = training_state['best_epoch']
-                self.patience_counter = training_state['patience_counter']
-                logger.debug(f"恢复早停状态：best_loss={self.best_val_loss:.6f}, best_mae = {self.best_val_mae:.6f}"
-                             f"best_epoch={self.best_epoch},patience_counter={self.patience_counter}")
+                self.patience_counter = 0
+                logger.debug(f"恢复早停状态：best_loss={self.best_val_loss:.6f}, best_mae = {self.best_val_mae:.6f},"
+                             f"best_epoch={self.best_epoch},patience_counter={self.patience_counter}。")
 
             # # 恢复学习率调度器状态（意外中断才用）
             # lr_state_file = os.path.join(pre_path,f'tf_checkpoint_stage{pre_stage}',
@@ -353,17 +601,18 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             #     with open(lr_state_path,'wb') as f:
             #         cloudpickle.dump(lr_schedule_state,f)
 
+
         logger.debug(
             f"\ninner_epoch {epoch}: 保存最佳模型到 {checkpoint_epoch_dir}")
 
         return checkpoint_epoch_dir
 
     def on_train_end(self, logs=None):
-        """训练结束时打印早停信息"""
+        """训练结束时打印早停信息，保存配置和训练历史"""
         if self.stopped_epoch > 0:
             logger.info(f"早停于 epoch {self.stopped_epoch}")
             logger.info(
-                f"最佳验证损失: {self.best_val_loss:.6f}，最佳验证MAE：{self.best_val_mae} 于 epoch {self.best_epoch}")
+                f"最佳模型 inner_epoch {self.best_epoch} ,最佳验证损失: {self.best_val_loss:.6f}，最佳验证MAE：{self.best_val_mae} ")
 
             if self.best_model_path is None:
                 match = re.search(r'(.+)tf_checkpoints_stage(\d+)', self.checkpoint_dir)
@@ -373,9 +622,7 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
                                                     f'epoch_{self.initial_epoch - 1}')
                 logger.info(f"本次训练没有生成最佳模型，最佳模型仍然是：上期{self.best_model_path}")
 
-    @staticmethod
-    @contextlib.contextmanager
-    def _suppress_output():
+    def _suppress_output(self):
         """抑制模型保存时的输出"""
         old_stdout = sys.stdout  # 备份原来的"屏幕输出通道"
         old_stderr = sys.stderr  # 备份原来的"错误输出通道"
@@ -420,7 +667,7 @@ class CosineAnnealingWarmRestarts(tf.keras.callbacks.Callback):
         - warmup_epochs: warmup阶段epoch数（先小学习率"热身"，再大学习率训练）
         - warmup_power: warmup曲线形状 (1=线性（直线）, 2=二次（曲线）)
         - restart_epochs: 重启点列表，如[15, 25]表示inner_epoch, 在第16、26轮训练就是热身轮（inner_epoch=15，25）
-        
+
         学习率调度（热身 + 完整余弦周期，即取余弦函数在 [0,2π] 上的完整波形）。学习率先下降后上升，形成一个 U 形。
         如果再重复，就会形成多个 U 形（波浪形）。
         a.如果重启会立刻打断原来的U上升，直接切为“warmup”顶到最高学习率。
@@ -527,271 +774,38 @@ class ContinueCosineAnnealing:
 
 
 class ForceLRCallback(tf.keras.callbacks.Callback):
-    def __init__(self, start_epoch=33):  # 用户友好
+    def __init__(self):
         super().__init__()
-        self.start_epoch = start_epoch
 
     def on_epoch_begin(self, epoch, logs=None):
-        """
-            epoch: Keras传入的当前实际epoch编号
-            当 fit(initial_epoch=33) 时：
-               第1个epoch: epoch = 33（从32到33）
-               第2个epoch: epoch = 34
-               第3个epoch: epoch = 35
-        """
+        """epoch: Keras传入的当前实际内部epoch编号"""
         if epoch <= 38:
-            target_lr = 2.5e-05
+            target_lr = 3.0e-05
         elif epoch <= 43:
-            target_lr = 2.0e-05
+            target_lr = 2.5e-05
         elif epoch <= 48:
-            target_lr = 1.2e-05
+            target_lr = 2.0e-05
         else:
             target_lr = 8e-05
 
         # 关键，修改现有优化器的学习率
         try:
             self.model.optimizer.learning_rate.assign(target_lr)
-            logger.debug(f"Epoch_{epoch}: 强制设置LR = {target_lr:.2e}")
+            logger.debug(f"Epoch_{epoch+1}: 强制设置LR = {target_lr:.2e}")
 
         except Exception as e:
-            logger.debug(f"无法修改学习率: {e}")
-            old = self.model.optimizer
+            logger.debug(f"ForceLRCallback训练过程中，无法修改学习率: {e}")
 
-            self.model.optimizer = tf.keras.optimizers.Adam(
-                learning_rate=target_lr,
-                beta_1=getattr(old, 'beta_1', 0.9),
-                beta_2=getattr(old, 'beta_2', 0.999),
-                epsilon=getattr(old, 'epsilon', 1e-7)
-            )
-            logger.debug(f"创建新优化器，但复制了超参数")
+    def on_epoch_end(self,epoch,logs=None):
+        # 进度条加学习率
+        logs = logs or {} # logs 是 Keras 内部维护的一个字典
 
+        current_lr = self.model.optimizer.learning_rate # 不同优化器获取学习率方式可能不同
+        # 获取到的是张量或变量（调度器对象本身）要变成 数值numpy()
+        if hasattr(current_lr,'numpy'):
+            current_lr = current_lr.numpy()
+        logs['learning_rate'] = current_lr
 
-class TrainingMultiModel:
-    def __init__(self, history_plot=True):
-        self.history_plot = history_plot
-
-    def training_model(self, model_name: str, trainset, valset,
-                       learning_rate,
-                       cos_min_lr, cos_total_epochs, cos_warmup_epochs,
-                       total_epochs, verbose: int = 2, early_stop_patience=10,
-                       check_save_mode=1,
-                       gap_tolerance_ratio=1.3,
-                       min_gap_threshold=0.0015,
-
-                       monitor=None, min_delta=1e-6,
-                       basic_dir: str = None,
-                       continue_from: str = None,
-                       model=None
-                       # reduce_lr_patience=2, # Reduce学习率才用
-
-                       ):
-        """
-        多任务模型：
-
-        1. 首次训练：
-            basic_dir !=None (带stage1的已存在keras文件目录)
-            model 是构建的 self.training_model_（tf.keras.models）
-            continue_from=None
-        2. 继续训练：
-            basic_dir 是None
-            model 为空，函数内部加载load .keras文件来（不需要新构建）
-            continue_from='/Users/shibo/Python/NeuralNetwork/saved_model/multi_lstm2_20260206_222944/tf_checkpoints_stage1'
-
-        trainset, valset ：训练集，既包括X,也包括标签y
-        early_stop_patience: 多少轮监控指标无变化就停止，融合在最佳模型类里，不用单独EarlyStopping
-        monitor：最佳模型的监控指标（在单任务里不需要参数）
-                None（默认）：多任务-代表监控总体验证损失val_loss（主），总提验证MAE val_mae(辅）
-                str('T'):多任务-指定监控的某特征
-        cos_total_epochs: 1周期余弦退火预热的总轮数
-        cos_warmup_epochs：4代表3轮热身 / 如果需要早停 耐心值至少是warmup_epochs的3-5倍
-        余弦退火（首次训练模式，支持restart_epochs重启，继续训练不支持，默认状态None）
-
-        """
-
-        if continue_from is None and basic_dir is not None and model is not None:
-            os.makedirs(basic_dir, exist_ok=True)
-
-            stage_number = 0
-            inner_epoch = 0
-            tf_checkpoint_stage_dir = os.path.join(basic_dir, 'tf_checkpoints_stage0')
-            os.makedirs(tf_checkpoint_stage_dir, exist_ok=True)
-            logger.info(f"首次训练模型，最佳模型将加载到:{tf_checkpoint_stage_dir}")
-
-            model_ = model
-
-            # 首次训练用 1. 余弦退火
-            cosine_callback = CosineAnnealingWarmRestarts(
-                initial_lr=learning_rate,
-                min_lr=cos_min_lr,
-                total_epochs=cos_total_epochs,
-                warmup_epochs=cos_warmup_epochs,
-                warmup_power=2.0,
-                restart_epochs=None)
-
-            cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
-                cosine_callback.optimal_cosine_annealing,
-                verbose=1)
-            logger.debug(
-                f"首次训练-余弦退火：周期总轮数 {cos_total_epochs},热身轮数cos_warmup_epochs-1： {cos_warmup_epochs - 1}")
-
-
-        # ============继续训练逻辑===============
-        else:
-            match = re.search(r"(.*)tf_checkpoints_stage(\d+)", str(continue_from))
-            stage_number = int(match.group(2)) + 1
-            tf_checkpoint_stage_dir = os.path.join(match.group(1), f'tf_checkpoints_stage{stage_number}')
-            os.makedirs(tf_checkpoint_stage_dir, exist_ok=True)
-
-            manager = SimpleTrainingManager(experiment_dir=continue_from, stage=stage_number - 1)
-            inner_epoch, model_ = manager.load_latest_checkpoint()
-
-            logger.debug(
-                f"加载检查点 Epoch={inner_epoch + 1} 模型，已训练 {inner_epoch + 1}/{total_epochs} 轮。下一次训练 Epoch={inner_epoch + 2}")
-
-            # 继续训练用
-            cosine_callback = ContinueCosineAnnealing(
-                initial_lr=learning_rate,  # 继续训练手动修改在外层配置修改
-                min_lr=cos_min_lr,
-                total_epochs=cos_total_epochs,
-                warmup_epochs=cos_warmup_epochs,
-                warmup_power=2.0,
-                start_epoch=inner_epoch + 1)
-            cosine_lr_optimal = tf.keras.callbacks.LearningRateScheduler(
-                cosine_callback.optimal_cosine_annealing_with_start,
-                verbose=1)
-            logger.debug(
-                f"继续训练-余弦退火：周期总轮数 {cos_total_epochs},热身轮数cos_warmup_epochs-1： {cos_warmup_epochs - 1}")
-
-        # callbacks===========================================
-
-        """2. 自定义检查点"""
-        checkpoint_callback = CustomCheckpointCallback(checkpoint_dir=tf_checkpoint_stage_dir,
-                                                       stage_number=stage_number,
-                                                       initial_epoch=inner_epoch + 1,
-                                                       metric=monitor,
-                                                       min_delta=min_delta,
-                                                       patience=early_stop_patience,
-                                                       check_save_mode=check_save_mode,
-                                                       gap_tolerance_ratio=gap_tolerance_ratio,
-                                                       min_gap_threshold=min_gap_threshold)
-
-        """学习率-固定 ForceLRCallback"""
-        force_callback = ForceLRCallback(start_epoch=inner_epoch + 1 if inner_epoch != 0 else 0, )
-
-        """学习率-ReduceLROnPlateau"""
-
-        reduceLR_lr_scheduler = tf.keras.callbacks.ReduceLROnPlateau(  # ReduceLROnPlateau
-            monitor=f'val_{monitor}_loss' if monitor is not None else 'val_loss',
-            factor=0.5,  # 学习率减半 factor=0.7: 每次减30%（衰减更慢）
-            # patience=reduce_lr_patience,  # 2个epoch无改善就降低LR
-            min_lr=1e-7,
-            min_delta=min_delta,  # 需要更显著改善
-            cooldown=0,
-            verbose=2,
-            mode='min')
-
-        """3. TensorBoard日志目录"""
-        # 训练后，bash 查看 tensorboard --logdir=~/Python/NeuralNetwork/weights/logs
-        log_dir = os.path.join(tf_checkpoint_stage_dir, "board_logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-        tensorboard_callback = tf.keras.callbacks.TensorBoard(
-            log_dir=log_dir,
-            histogram_freq=1,
-            write_graph=True,
-            write_images=True,
-            update_freq='epoch'
-        )
-
-        # callbacks===========================================
-
-        # 诊断梯度
-        # probe_gradient_norm(model_, trainset, num_batches=30)
-
-        record = model_.fit(
-            trainset,
-            validation_data=valset,
-            epochs=total_epochs,  # 用户友好
-            initial_epoch=inner_epoch + 1 if inner_epoch != 0 else 0,
-            # 用户友好 内部epoch=22（从0开始）这里填Epoch23 （Keras我已经完成了23轮训练）
-            verbose=verbose,  # 设置日志显示，0为不在标准输出流输出日志信息，1为输出进度条记录 2 epoch每轮输出一行记录
-            callbacks=[
-                # 1. 学习率：余弦退火
-                cosine_lr_optimal,  # 替换ReduceLROnPlateau
-                # force_callback, # 强制学习率
-                # reduceLR_lr_scheduler,
-
-                # 2. 最佳检查点（带早停）
-                checkpoint_callback,
-                # 3. TensorBoard
-                tensorboard_callback,
-
-            ]
-        )
-        best_model_info = checkpoint_callback.get_best_model_info()
-
-        if self.history_plot:
-            save_dir = os.path.expanduser("~/Python/NeuralNetwork/temperature_forecasting/data/pics/")
-            history_plot(history=record, model_name=model_name, save_dir=save_dir)
-
-
-
-
-        return record, best_model_info['best_model_epoch_path']  # epoch
-
-
-class TrainingSingleModel(TrainingMultiModel):
-    def __init__(self,history_plot=False):
-        super().__init__(history_plot=history_plot)
-
-    def training_model(self, model_name: str, trainset, valset,
-                       learning_rate,
-                       cos_min_lr, cos_total_epochs, cos_warmup_epochs,
-                       total_epochs: int = 20, verbose: int = 2, early_stop_patience=5,
-                       check_save_mode=1,
-                       gap_tolerance_ratio=1.3,
-                       min_gap_threshold=0.0015,
-                       monitor=None, min_delta=1e-6,
-                       basic_dir: str = None,
-                       continue_from: str = None,
-                       model=None
-                       ):
-        '''单任务模型：注释同 TrainingMultiModel'''
-
-        # 处理数据形状
-        def safe_map_function(x, y):
-            """安全的 map 函数，确保返回有效数据"""
-            if y is None:
-                y = tf.zeros([tf.shape(x)[0], 5, 1], dtype=tf.float32)  # 创建零值标签
-
-            if isinstance(y, dict):
-                if 'T' in y:
-                    y = y['T']
-                elif len(y) > 0:
-                    y = list(y.values())[0]  # 取第一个值（单特征的训练）
-                else:
-                    y = tf.zeros([tf.shape(x)[0], 5, 1], dtype=tf.float32)
-
-            return x, y
-
-        trainset = trainset.map(safe_map_function)
-        valset = valset.map(safe_map_function)
-
-        # 继续父类训练
-        config = {'trainset': trainset, 'valset': valset,
-                  'model_name': model_name,
-                  'learning_rate': learning_rate,
-                  'cos_min_lr': cos_min_lr,
-                  'cos_total_epochs': cos_total_epochs,
-                  'cos_warmup_epochs': cos_warmup_epochs,
-                  'total_epochs': total_epochs,
-                  'verbose': verbose, 'early_stop_patience': early_stop_patience,
-                  'check_save_mode': check_save_mode,
-                  'gap_tolerance_ratio': gap_tolerance_ratio,
-                  'min_gap_threshold': min_gap_threshold,
-                  'monitor': monitor, 'min_delta': min_delta,
-                  'basic_dir': basic_dir,
-                  'continue_from': continue_from,
-                  'model': model}
-        return super().training_model(**config)
 
 def probe_gradient_norm(model, dataset, num_batches=10):
     logger.debug("\n 开始探测梯度范数 (Probe Mode)...")
@@ -849,31 +863,34 @@ def probe_gradient_norm(model, dataset, num_batches=10):
         return None
 
 
-"""
-一般训练规律 损失值：
-train loss 不断下降   validation loss不断下降---网络仍在学习
-train loss 不断下降   validation loss不断上升---网络过拟合，添加dropout和max pooling
-train loss 不断下降   validation loss趋于不变---网络欠拟合
-train loss 趋于不变   validation loss趋于不变---网络陷入瓶颈，减小学习率（自适应效果不大）和batch数量减少
-train loss 不断上升   validation loss不断上升---网络结构问题，训练超参数设置不当，数据集需要清洗等
-train loss 不断上升   validation loss不断下降---数据集有问题，建议重新选择
+def compile_for_continue(model, opt, output_config):  # 同一Python进程中直接获取实例。独立的演化路径
+    """为预测模型重新编译 多输出会折叠metrics会折叠"""
 
+    # 使用统一的配置管理器
+    loss_config = ModelConfigManager.get_loss_config(output_config)
+    metrics_config = ModelConfigManager.get_metrics_config(output_config)
+    loss_weights_config = ModelConfigManager.get_loss_weights_config(output_config)
 
-一般训练规律：准确度（整体训练趋势）
-train accuracy 不断上升   validation accuracy 不断上升---网络仍在学习
-train accuracy 不断上升   validation accuracy 不断下降---网络过拟合，添加dropout和max pooling
-train accuracy 不断上升   validation accuracy 趋于不变---网络欠拟合
-train accuracy 趋于不变   validation accuracy 趋于不变---网络陷入瓶颈，减小学习率（自适应效果不大）和batch数量减少
-train accuracy 不断下降   validation loss 不断下降---网络结构问题，训练超参数设置不当，数据集需要清洗等
-train accuracy 不断下降   validation loss 不断上升---数据集有问题，建议重新选择
+    logger.debug("=== 编译前检查 ===")
+    logger.debug(f"loss_config: {loss_config}")
+    logger.debug(f"loss_config类型: {type(loss_config)}")
+    logger.debug(f"metrics_: {metrics_config}")
+    logger.debug(f"metrics类型: {type(metrics_config)}")
+    logger.debug(f"loss_weights:{loss_weights_config}")
+    logger.debug(f"loss_weights类型:{type(loss_weights_config)}")
 
-# 常见问题和调整方案：
-问题                            | 解决方案
---------------------------------------------------------------
-训练初期不稳定                  | 增加warmup_epochs (3→5)
-前期收敛太慢                    | 减少warmup_epochs (5→3)或增加warmup_power (1.0→2.0)
-后期还在下降，想继续训练         | 增加total_epochs (30→40)
-想尝试跳出局部最优              | 启用重启: restart_epochs=[15, 25]
+    model.compile(
+        optimizer=opt,
+        loss=loss_config,  # 字典 键是输出层名
+        loss_weights=loss_weights_config,
+        metrics=metrics_config
+    )
 
-后期过拟合                      | 减少total_epochs (30→25)或增加EarlyStopping
-"""
+    logger.debug("编译完成，验证metrics配置...")
+    if len(model.metrics) >= 2:
+        compile_metrics = model.metrics[1]
+        if hasattr(compile_metrics, '_user_metrics'):
+            actual_metrics = compile_metrics._user_metrics
+            logger.debug(f"实际编译的metrics配置: {actual_metrics}")
+            logger.debug(f"期望的metrics配置: {metrics_config}")
+    return model

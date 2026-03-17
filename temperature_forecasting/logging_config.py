@@ -46,7 +46,7 @@ LOGGING_CONFIG = {
         },
         'evaluation.model_evaluation': {
             'handlers': ['default'],
-            'level': 'DEBUG',
+            'level': 'INFO',
             'propagate': True},
 
         'sklearn': {  # 第三方库sklearn的配置

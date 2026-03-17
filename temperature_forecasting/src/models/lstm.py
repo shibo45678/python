@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, PositiveInt, field_validator
 from typing import List, Optional, Dict
 import logging
 
-from tensorflow.python.keras.regularizers import l2
+# from tensorflow.python.keras.regularizers import l2
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +155,8 @@ class SingleTaskLstmModel:
         for i, (u, s) in enumerate(zip(units, return_sequences)):  # units列表长度代表 LSTM 层数
             x = tf.keras.layers.LSTM(units=u, return_sequences=s, activation='tanh',
                                      # 正则化配置：LSTM内部的dropout可能影响序列信息的传递
-                                     # dropout=0.1,  # 循环dropout（对输入门、遗忘门、输出门） 影响：输入特征层面的随机性 ，作用：防止模型过度依赖某些特定输入特征
-                                     # recurrent_dropout=0.05,  # 状态dropout（对循环连接） 影响：时间维度的随机性，作用：防止模型过度依赖特定的时间模式，值设置
+                                     dropout=0.015,  # 循环dropout（对输入门、遗忘门、输出门） 影响：输入特征层面的随机性 ，作用：防止模型过度依赖某些特定输入特征
+                                     recurrent_dropout=0.00,  # 状态dropout（对循环连接） 影响：时间维度的随机性，作用：防止模型过度依赖特定的时间模式，值设置
                                      name=f'lstm_{i + 1}')(x)
 
             # 可换双向：
