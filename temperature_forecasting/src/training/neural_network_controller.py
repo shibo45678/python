@@ -218,12 +218,14 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.evaluate_model(dataset=self.val_window_data_, dataset_type='val')
 
         # 1.6 计算验证集特征重要性
-        computer = FeatureImportance()
-        computer.permutation_importance_lstm(model=self.prediction_model_,valsets=self.val_window_data_,
-                                             n_repeats=5,output_configs=self.model_config['output_config'],
-                                             num_feature_names =self.model_config.get('numeric_columns'),
-                                             cat_feature_names = self.model_config.get('categorical_columns'),
-                                             model_name = self.model_config['model_type'])
+        compute=self.model_config.get('compute_feature_importance',False)
+        if compute:
+            computer = FeatureImportance()
+            computer.permutation_importance_lstm(model=self.prediction_model_,valsets=self.val_window_data_,
+                                                 n_repeats=5,output_configs=self.model_config['output_config'],
+                                                 num_feature_names =self.model_config.get('numeric_columns'),
+                                                 cat_feature_names = self.model_config.get('categorical_columns'),
+                                                 model_name = self.model_config['model_type'])
         self.is_fitted_ = True
 
         return self
@@ -246,6 +248,8 @@ class TimeSeriesEstimator(BaseEstimator, RegressorMixin, ClassifierMixin):
         predictions = self.prediction_model_.predict(predict_window_data)  # 多输入和输出（tuple,dict）->预测结果是list
 
         return predictions
+
+
 
     def permutation_importance_lstm(self, model, X_val, y_val, feature_names):
         """计算 LSTM 的排列重要性

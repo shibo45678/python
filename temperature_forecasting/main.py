@@ -11,6 +11,7 @@
 # 线程内，实现窗口和模型拆分，主要是继续训练需要避免再做一次预处理（线程不包括预处理，fit里面除了模型训练还有窗口数据形成， 尽量不要线程外保存一次，内再保存一次）
 # 多任务的LSTM未实现 注意力机制等 / cnn的单独训练
 # 测试集小(保证连续）可能会导致测试集的指标不好，因为回测的数据代表性不足，分布不一致等
+# 处理缺失增加自定义函数 'custom':{'columns':[],'func':partial()}, 目前是类
 from utils.tensorflow_config import TensorFlowConfig
 import copy
 from concurrent.futures import ThreadPoolExecutor
@@ -18,7 +19,7 @@ from functools import partial
 from training.neural_network_controller import TimeSeriesEstimator
 from trained.model_postprocessor import TimeSeriesPostProcessor, MetricsCalculator
 from pipelines.preprocess_pipeline import CompletePreprocessor
-from data.data_preprocessing import TimeSeriesSplitter
+from data.data_preprocessing import TimeSeriesSplitter, SplitByTimepoints
 from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, DeleteUselessCols, ProblemColumnsFixed,
                                    SpecialColumnsFixed, CheckExtreFeatures,
                                    NumericOutlierProcessor, detect_, handle_,
@@ -27,7 +28,7 @@ from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, D
                                    ColumnsTypeIdentify,
                                    ConvertCategoricalColumns,
                                    ConvertNumericColumns, ProcessTimeseriesColumns, ProcessContinuous,
-                                   StatisticsOutlierDetector, RemoveNanHandler)
+                                   StatisticsOutlierDetector, RemoveNanHandler, HistNanHandler)
 from data.data_preprocessing import SimpleTimeSampler
 from data.feature_engineering import (WeatherGenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
                                       UnifiedFeatureScaler, OrdinalCategoricalEncoder,
@@ -56,11 +57,11 @@ def main():
     check_outliers_config = {'method': 'iqr', 'threshold': 1.5}
     download_duplicates_config = {
         'enabled': True,
-        'path': '~/Python/NeuralNetwork/temperature_forecasting/data/intermediate',
+        'path': '~/AL/NeuralNetwork/temperature_forecasting/data/intermediate',
         'filename': 'duplicate_rows.csv'}
     download_outliers_details_config = {
         'enabled': True,
-        'path': '~/Python/NeuralNetwork/temperature_forecasting/data/intermediate',
+        'path': '~/AL/NeuralNetwork/temperature_forecasting/data/intermediate',
         'filename': 'outliers.csv'}
 
     detector = StatisticsOutlierDetector(zscore_outlier_threshold=3.0, iqr_outlier_threshold=1.5)
@@ -77,7 +78,7 @@ def main():
         {'custom': {'columns': ['auto_handle_remain'], 'handle_method': ['ignore'], 'skip_handle': [],
                     'detect_function': partial(detector.recommend_detection_method)}}
     ],
-        'generate_outlier_indicator': [], # 选填 label
+        'generate_outlier_indicator': [],  # 选填 label
     }
 
     categorical_outliers_config = {
@@ -89,7 +90,7 @@ def main():
         'spec_fill': [
             {'constant': {'columns': ['wv', 'max. wv'], 'fill_value': [0, 0]}},
             {'mode': {'columns': []}},
-            {'ffill': {'columns': ['p']}},  # 气压变化相对连续稳定，短期内有持续性
+            {'ffill': {'columns': []}},  # 气压变化相对连续稳定，短期内有持续性
             {'bfill': {'columns': ['rh']}}  # 湿度变化相对缓慢，受天气系统影响有持续性
         ],
         'skip_fill': [],
@@ -107,23 +108,25 @@ def main():
             {'minmax': {'columns': [], 'feature_range': (-1, 1)}},  # 相同方法，但是其他参数配置与前一配置不同，允许在下一行填写
             {'robust': {'columns': ['T', 'wv_y', 'max. wv_x', 'max. wv_y'], 'quantile_range': (25, 75)}}
         ],
-        'skip_scale': ['is_night', 'is_cold_front','hour_sin', 'hour_cos', 'day_of_year_cos', 'day_of_year_sin', 'Season_sin',
+        'skip_scale': ['is_night', 'is_cold_front', 'hour_sin', 'hour_cos', 'day_of_year_cos', 'day_of_year_sin',
+                       'Season_sin',
                        'Season_cos']  # 跳过二分类列(数值型）/ 异常值标记列 / missing标记
 
     }
 
     preparation_configs = [
         {'obj_list': [DescribeData(), DeleteUselessCols()], 'len_change': False},
-        {'obj_list': [RemoveDuplicates(download_config=download_duplicates_config)], 'len_change': True},
+        {'obj_list': [RemoveDuplicates(download_config=download_duplicates_config, pass_through=True)],
+         'len_change': True},
         {'obj_list': [ColumnsTypeIdentify(),
-                      ProcessTimeseriesColumns(interactive=False),
+                      ProcessTimeseriesColumns(interactive=False, pass_through=True),
                       ConvertCategoricalColumns(categorical_columns=[]),
                       ConvertNumericColumns(preserve_object_integer_types=True, exclude_cols=['Date Time']),
                       ProblemColumnsFixed(problem_columns=['wv']), SpecialColumnsFixed(problem_columns=['T']),  # wv 一样
                       CheckExtreFeatures(method_config=check_outliers_config,
                                          download_config=download_outliers_details_config),
 
-                      NumericMissingValueHandler(method_config=numeric_missing_config),
+                      NumericMissingValueHandler(method_config=numeric_missing_config, pass_through=False),
                       CategoricalMissingValueHandler(method_config=None, pass_through=True),  # 后续隔离森林精细去异常
 
                       NumericOutlierProcessor(method_config=numeric_outliers_config),  # iqr / 业务初筛 --> 异常值初筛
@@ -134,15 +137,16 @@ def main():
          'len_change': True},
 
         {'obj_list': [GenerationFromTimeseries(time_column='Date Time', plot=False),
-                      WeatherGenerationFromNumeric(selected_columns=['wd', 'wv', 'max. wv', 'T', 'rh', 'Tdew','VPdef','hour_sin','is_night'],
-                                                   create_statistical=True, create_interactions=True)],
+                      WeatherGenerationFromNumeric(
+                          selected_columns=['wd', 'wv', 'max. wv', 'T', 'rh', 'Tdew', 'VPdef', 'hour_sin', 'is_night'],
+                          create_statistical=True, create_interactions=True)],
          'len_change': False},
 
         {'obj_list': [RemoveNanHandler(pass_through=False)], 'len_change': True},
 
         {'obj_list': [BasedOnCorrSelector(pass_through=True),
                       CustomTransformer(model_name='lstm', pass_through=False,
-                                        power_columns=['rh','wv_y', 'max. wv_y'],
+                                        power_columns=['rh', 'wv_y', 'max. wv_y'],
                                         power_method='yeo-johnson', power_standardize=False,
                                         power_skip=['hour_cos', 'Season_cos', 'day_of_year_sin', 'day_of_year_cos',
                                                     'hour_sin', 'is_night', 'Season_sin'],
@@ -151,7 +155,7 @@ def main():
                       UnifiedFeatureScaler(method_config=scaling_config, algorithm='lstm'),  # 自动根据数据分布及算法类型进行推荐标准化
                       OrdinalCategoricalEncoder(encode_order_cols={
                           'segments': ['极寒', '严寒', '寒冷', '冰点下', '低温', '凉', '舒适', '暖', '热']},
-                          handle_unknown='use_encoded_value', unknown_value=-1,pass_through=True), # 特征取消
+                          handle_unknown='use_encoded_value', unknown_value=-1, pass_through=True),
                       VisualizationForNeural(pass_through=True),
                       ], 'len_change': False},
     ]
@@ -160,25 +164,53 @@ def main():
     loader = DataLoader(input_files=['data_climate.csv'], pattern="new_*.csv", data_dir='data/raw')
     raw_data = loader.learn_process()
 
-    # 2. 数据集分割
-    splitter = TimeSeriesSplitter(train_size=0.7, val_size=0.2, test_size=0.1, shuffle=False)
-    df_train, df_val, df_test = splitter.learn_process(raw_data)
+    # splitter = TimeSeriesSplitter(train_size=0.7, val_size=0.2, test_size=0.1, shuffle=False)
+    # df_train, df_val, df_test = splitter.learn_process(raw_data)
+    # logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
+    #
+    # continuous = ProcessContinuous(interactive=False, create_extract_continuous=True)
+    # df_test_adjust, _ = continuous.learn_process(df_test, y=None)  # 只选择连续的样本集
+
+    #
+    # continuous = ProcessContinuous(interactive=False, create_extract_continuous=True)
+    # raw_data_adjusted,_= continuous.learn_process(raw_data,y=None)
+    # time_col = continuous.valid_time_column_
+    #
+    # remove = RemoveDuplicates(download_config=download_duplicates_config, pass_through=False) # 可能受少量重复影响
+    # raw_data_clean,_ =remove.learn_process(raw_data_adjusted,y=None)
+    #
+    # hist = HistNanHandler(lookback_years=10, time_column=time_col, pass_through=False)
+    # raw_data_filled,_ = hist.learn_process(raw_data_clean,y=None)
+    #
+    # splitter = SplitByTimepoints(val_start='2014-01-01 00:10:00',test_start ='2016-01-01 00:10:00',column_name =time_col)
+    # df_train,df_val,df_test = splitter.learn_process(X=raw_data_filled,y=None)
+    # logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
+
+    # 2. 数据集分割流水线（数据质量：调整时间序列的连续性 + 历史数据填充大片时间序列 + 数据集分割）
+    data_split_configs = [
+        {'obj_list': [
+            ProcessContinuous(interactive=False, create_extract_continuous=False),
+            RemoveDuplicates(pass_through=False),
+            HistNanHandler(lookback_years=10, pass_through=True),
+            SplitByTimepoints(val_start='2014-01-01 00:10:00', test_start='2016-01-01 00:10:00',
+                              column_name='Date Time')
+        ], 'len_change': True}]
+
+    splitter = CompletePreprocessor(data_split_configs)
+    splitter.train(features=raw_data, labels=None)
+    (df_train, df_val, df_test), _ = splitter.transform_predict(features=raw_data, labels=None)
     logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
+    time_col = splitter._get_step(0, 0).valid_time_column_
 
-    # * 检查时间序列的连续性：调整测试集样本量，逆转换时间列匹配
-    continuous = ProcessContinuous(interactive=False, create_extract_continuous=True)
-    df_test_adjust, _ = continuous.learn_process(df_test, y=None)  # 只选择连续的样本集
-
-    # 3. 数据预处理(生成训练、验证、预测数据）
+    # 3. 数据预处理流水线 (生成训练、验证、预测数据）
     preprocessor = CompletePreprocessor(preparation_configs)
     features_temp_train, _ = preprocessor.train(features=df_train, labels=None)
 
     features_temp_val, _ = preprocessor.transform_predict(features=df_val, labels=None)
-    features_temp_test, _ = preprocessor.transform_predict(features=df_test_adjust, labels=None)
+    features_temp_test, _ = preprocessor.transform_predict(features=df_test, labels=None)
 
     num_cols = preprocessor.get_specific_attribute(6, 'engineer_2', 'numeric_columns_')  # 取第7个class的第4步的属性
     cat_cols = preprocessor.get_specific_attribute(6, 'engineer_3', 'categorical_columns_')
-    time_col = preprocessor.get_specific_attribute(2, 'engineer_1', 'valid_time_column_')
 
     # 4. 并行模型训练、评估
     base_lstm_model_config = {'numeric_columns': num_cols,
@@ -192,18 +224,18 @@ def main():
                               'units': [256],  # len控制lstm的层数
                               'return_sequences': [False],
                               'verbose': 2,
-                              'total_epochs':50,
+                              'total_epochs': 1,
 
                               'early_stop_patience': 15,
                               'check_save_mode': 2,
                               'gap_tolerance_ratio': 1.07,
                               'min_gap_threshold': 0.002,
 
-                              'min_delta': 1e-4, # 1e-4
+                              'min_delta': 1e-4,  # 1e-4
                               'learning_rate': 0.0003,
                               'cos_min_lr': 1e-5,
                               'cos_total_epochs': 25,
-                              'cos_warmup_epochs': 5, # 首次训练支持restart
+                              'cos_warmup_epochs': 5,  # 首次训练支持restart
 
                               'weight_decay': 1e-5,
                               'clipnorm': 10,  # 首次fit前先诊断 只拦截 >10.0 的异常尖峰
@@ -213,6 +245,7 @@ def main():
         # 集中切换: 单/多任务 and 继续训练
         'model_type': 'single_lstm1',  # 数字代表LSTM层数(包括：公共层和模型.py的专用LSTM）
         'multi_tasks': False,
+        'compute_feature_importance': False,
         'output_config': {
             'T': {'type': 'regression',
                   'loss': 'mse',
@@ -221,12 +254,12 @@ def main():
                   'units': 1,
                   }},
         # 直接main.py文件继续训练（至stage)
-        'continue_from': # None,
-        '/Users/shibo/AL/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage2',
+        'continue_from': None,
+        # '/Users/shibo/AL/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage2',
 
         # continue_training.py文件的继续训练结果（至epoch)
         'final_best_model': None,
-        # '/Users/shibo/AL/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage0/epoch_22'
+        # '/Users/shibo/AL/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage2/epoch_37'
     }}
 
     # multi_lstm_model_config2 = {**base_lstm_model_config, **{
@@ -260,12 +293,16 @@ def main():
     data = {'train_data': features_temp_train, 'val_data': features_temp_val}  # 训练要求验证集
 
     # 准备指标计算数据（回测用，预测不用） 采样后的原数据
-    valid_df_test, _ = preprocessor._get_step(3, 0).process(df_test_adjust)  # 处理连续性测试集的采样步骤（第4个class,第0个实例) 采样
+    valid_df_test, _ = preprocessor._get_step(3, 0).process(df_test)  # 处理连续性测试集的采样步骤（第4个class,第0个实例) 采样
+
+    features_temp_test.to_csv(
+        '/Users/shibo/AL/NeuralNetwork/temperature_forecasting/data/intermediate/analyze/testsets.csv')
 
     # 并行训练和预测
+
     def train_single_config(config, X, y, preprocessor,
-                            calc_metrics=True, original_data_no_scaled=None, original_data_scaled=None,
-                           ):
+                            original_data_no_scaled=None, original_data_scaled=None,
+                            ):
         """
         单个模型的训练和预测流程
 
@@ -314,11 +351,10 @@ def main():
             logger.info(
                 f"测试集生成 {len(raw_predictions)} 个预测结果，每个结果代表一个预测label，形状：shape:{raw_predictions[list(config.get('output_config').keys())[0]].shape}")
 
-
             # 5. 逆标准化/编码（使用后处理器）预测数据 + 原始数据（用于训练的数值列里面的2分类列，未标准化，需要排除掉）
             inverse_predictions = postprocessor.custom_inverse_transform(
                 raw_predictions=raw_predictions,
-                use_saved=False,  # 使用【内存】中的preprocessor
+                use_saved=True,  # 是否使用【内存】中的preprocessor
                 task_config=config.get('output_config'),
                 output_width=config.get('output_width'),
                 pipeline_name='pipeline_6',
@@ -327,12 +363,14 @@ def main():
 
             # 6. 添加时间戳
             final_pred_results, predictions_dict = postprocessor.add_timestamps(
+                mode = 'train',
                 predictions=inverse_predictions,
                 historical_timestamps=features_temp_test_data_copy[time_column],
                 input_width=config.get('input_width', 6),
                 output_width=config.get('output_width', 5),
                 freq='h',
                 shift=config.get('shift', 0),
+                save_path = '/Users/shibo/AL/NeuralNetwork/temperature_forecasting/data/final/all_predictions.csv'
             )
 
             logger.info(f"模型 {model_name} 训练成功")
@@ -340,34 +378,35 @@ def main():
             logger.info(f"最终预测结果形状: {final_pred_results.shape}")
 
             # 7. mape 业务 / mse mae 技术
-            if calc_metrics:
-                # 逐步step
-                step_mape = postprocessor.calculate_mape(
-                    pred_data=final_pred_results,
-                    original_data=original_data_no_scaled.copy(),
-                )
-                logger.debug(f"预测结果和原数据合并表：{step_mape.tail(10)}")
+            # 逐步step
+            step_mape = postprocessor.calculate_mape(
+                pred_data=final_pred_results,
+                original_data=original_data_no_scaled.copy(),
+            )
+            logger.debug(f"预测结果和原数据合并表：{step_mape.tail(10)}")
 
-                # 逐时间点timepoint / 各级别 mape mse mae
-                mape_dict = MetricsCalculator.mape_calculator(predictions=predictions_dict,  # 逆标准化数据
-                                                              actual_data=original_data_no_scaled.copy(),  # 原数据
-                                                              input_width=config.get('input_width'),
-                                                              shift=config.get('shift'), level='o',
-                                                              time_column=config.get('time_column', 'Date Time'))
+            # 逐时间点timepoint / 各级别 mape mse mae
+            smape_dict = MetricsCalculator.smape_calculator(predictions=predictions_dict,  # 逆标准化数据
+                                                            actual_data=original_data_no_scaled.copy(),  # 原数据
+                                                            input_width=config.get('input_width'),
+                                                            shift=config.get('shift'), level='o',
+                                                            # o:original 原始数据时间粒度（单时间点级别）/‘D’  日级别 ‘M’月级别
+                                                            time_column=config.get('time_column', 'Date Time'))
 
-                mae_mse_dict = MetricsCalculator.mae_mse_calculator(predictions=raw_predictions,  # 注意是标准化数据
-                                                                    actual_data=features_temp_test_data_copy.copy(),  # 标准化原数据
-                                                                    input_width=config.get('input_width'),
-                                                                    shift=config.get('shift'), level='o',
-                                                                    time_column=config.get('time_column', 'Date Time'))
+            mae_mse_dict, mae_dict = MetricsCalculator.mae_mse_calculator(predictions=raw_predictions,  # 注意是标准化数据
+                                                                          actual_data=features_temp_test_data_copy.copy(),
+                                                                          # 标准化原数据
+                                                                          input_width=config.get('input_width'),
+                                                                          shift=config.get('shift'), level='o',
+                                                                          time_column=config.get('time_column',
+                                                                                                 'Date Time'))
 
-                MetricsCalculator.download_data(result_mae_mse=mae_mse_dict, result_mape=mape_dict, level_mae_mse='o',
-                                                level_mape='o')
+            MetricsCalculator.download_data(result_mae_mse=mae_mse_dict, result_mape=smape_dict, level_mae_mse='o',
+                                            level_mape='o')
 
             # 8. 保存状态
             predict_window_, predict_window_config = estimator._forecast_window_generator()
             best_checkpoint = estimator.best_checkpoint  # 'saved_model/multi_lstm1_20260104_143043/tf_checkpoints/model_epoch_2/'
-
 
             deployment = DeploymentManager(
                 model_name=config['model_type'],
@@ -376,9 +415,10 @@ def main():
                 postprocessor=postprocessor,
                 model_config=config,
                 window_config=predict_window_config,
-                window_generator=predict_window_
+                window_generator=predict_window_,
+                mae_dict=mae_dict
             )
-            deployment.save('./deployment_package')
+            deployment.save('./temperature_forecasting/deployment_package')
 
             return {
                 'model_name': model_name,
@@ -400,7 +440,7 @@ def main():
                 'config': config
             }
 
-    configs = [single_lstm_model_config1]  #  multi_lstm_model_config2
+    configs = [single_lstm_model_config1]  # multi_lstm_model_config2
 
     failed_configs = []
     trained_models = []

@@ -127,7 +127,8 @@ class SingleTaskLstmModel:
             for col_name in cat_cols:
                 cat_input = tf.keras.layers.Input(
                     shape=(input_width,),  # (6, ) 表示6个时间步，1个特征
-                    name=f"categorical_{col_name}_input"
+                    name=f"categorical_{col_name}_input",
+                    dtype=tf.int32
                 )
                 categorical_inputs.append(cat_input)
 
@@ -291,7 +292,8 @@ class MultiTasksLstmModel(SingleTaskLstmModel):
             for col_name in cat_cols:
                 cat_input = tf.keras.layers.Input(
                     shape=(input_width,),  # (6, ) 表示6个时间步，1个特征
-                    name=f"categorical_{col_name}_input"
+                    name=f"categorical_{col_name}_input",
+                    dtype=tf.int32
                 )
                 categorical_inputs.append(cat_input)
 

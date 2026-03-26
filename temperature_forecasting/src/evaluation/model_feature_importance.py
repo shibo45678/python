@@ -4,7 +4,7 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
-import shap
+
 
 from data import Visualization
 from .model_evaluation import ModelEvaluation
@@ -137,10 +137,6 @@ class FeatureImportance:
                 importance_dict[task_name] = feat_dict
             return importance_dict
 
-
-
-
-
 def dataset_to_numpy(dataset, cat_columns, output_configs):
     features_list = []
     labels_list = defaultdict(list)
@@ -158,11 +154,9 @@ def dataset_to_numpy(dataset, cat_columns, output_configs):
 
             feature_tuple = tuple(feat_num + feat_cat)  # 合并list后，直接转为tuple(list)
             features_list.append(feature_tuple)
-
         else:
             (feat_num,), labels_dict = batch
             features_list.append((feat_num.numpy(),))
-
         for task_name in output_configs.keys():
             labels_list[task_name].append(labels_dict.get(task_name))
 

@@ -172,8 +172,8 @@ class TrainingMultiModel:
             mode='min')
 
         """3. TensorBoard日志目录"""
-        # 训练后，bash 查看 tensorboard --logdir=~/Python/NeuralNetwork/weights/logs
-        log_dir = os.path.join(tf_checkpoint_stage_dir, "board_logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+        # bash 查看 tensorboard --logdir ~/AL/NeuralNetwork/saved_model/single_lstm1_20260316_090043/tf_checkpoints_stage2/logs/
+        log_dir = os.path.join(tf_checkpoint_stage_dir, "logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
         tensorboard_callback = tf.keras.callbacks.TensorBoard(
             log_dir=log_dir,
             histogram_freq=1,
@@ -203,14 +203,13 @@ class TrainingMultiModel:
                 # 2. 最佳检查点（带早停）
                 checkpoint_callback,
                 # 3. TensorBoard
-                tensorboard_callback,
-
+                tensorboard_callback
             ]
         )
         best_model_info = checkpoint_callback.get_best_model_info()
 
         if self.history_plot:
-            save_dir = os.path.expanduser("~/Python/NeuralNetwork/temperature_forecasting/data/pics/")
+            save_dir = os.path.expanduser("~/AL/NeuralNetwork/temperature_forecasting/data/pics/")
             history_plot(history=record, model_name=model_name, save_dir=save_dir)
 
         return record, best_model_info['best_model_epoch_path']  # epoch
@@ -559,9 +558,9 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             self.model.save(keras_path)  # 默认就是.keras格式
 
             # 2. 保存为SavedModel格式（用于部署）
-            export_path = os.path.join(checkpoint_epoch_dir,
+            saved_path = os.path.join(checkpoint_epoch_dir,
                                        f'saved_model_stage{self.stage_number}')  # epoch下面的saved_model文件夹
-            self.model.export(export_path)
+            self.model.export(saved_path)
 
             # 3. 单独保存模型权重（model.keras已包含权重，此文件为兼容性/迁移学习保留）
             weight_path = os.path.join(checkpoint_epoch_dir, f'model_stage{self.stage_number}.weights.h5')

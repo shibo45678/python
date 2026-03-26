@@ -1,0 +1,47 @@
+# Git 相关
+.git
+../.gitignore
+
+# Python 缓存
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 虚拟环境
+venv
+env
+ENV
+.venv
+
+# 开发工具配置
+.vscode
+.idea
+*.swp
+*.swo
+
+# 日志和临时文件
+*.log
+*.tmp
+*.bak
+
+# 测试和覆盖率
+.pytest_cache
+.coverage
+htmlcov
+
+# data/
+temperature_forecasting/data/intermediate
+temperature_forecasting/data/pics
+temperature_forecasting/data/raw/new_*.csv
+temperature_forecasting/data/raw/merged_*.csv
+temperature_forecasting/data/raw/data_climate.csv
+
+# Docker 相关
+Dockerfile
+.dockerignore
+
+# 其他不需要的文件
+*.md
+LICENSE

@@ -62,7 +62,6 @@ def validate_input(validate_y=True, allow_empty=False, **param_checks):
     return decorator
 
 
-# 复制您的 CheckExtreFeatures 类代码
 class CheckExtreFeatures(BaseEstimator, TransformerMixin):
     def __init__(self, method_config=None,download_config =None):
         if method_config is None:
@@ -73,7 +72,7 @@ class CheckExtreFeatures(BaseEstimator, TransformerMixin):
         if download_config is None:
             self.download_config = {
                 'enabled': True,
-                'path': '~/Python/NeuralNetwork/temperature_forecasting/data/intermediate',
+                'path': '~/AL/NeuralNetwork/temperature_forecasting/data/intermediate',
                 'filename': 'outliers.csv'}
         else:
             self.download_config = dict(download_config)
