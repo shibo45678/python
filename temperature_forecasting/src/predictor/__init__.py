@@ -1,1 +1,1 @@
-from predictor.model_predictor import TrainedModelPredictor
+# from src.predictor.model_predictor import TrainedModelPredictor

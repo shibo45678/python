@@ -8,10 +8,11 @@ import numpy as np
 from typing import Dict
 import tensorflow as tf
 from sklearn.metrics import classification_report, confusion_matrix
-from data.windows import EnhancedWindowGenerator
 import logging
 
 logger = logging.getLogger(__name__)
+from src.data.windows import EnhancedWindowGenerator
+
 
 
 class ModelEvaluation:

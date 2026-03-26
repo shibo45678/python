@@ -1,17 +1,13 @@
 # 特征重要性分析（排列重要性、SHAP等）
 import copy
 from collections import defaultdict
-
 import numpy as np
 import pandas as pd
-
-
-from data import Visualization
-from .model_evaluation import ModelEvaluation
 import logging
 
 logger = logging.getLogger(__name__)
-
+from src.data.exploration import Visualization
+from src.evaluation.model_evaluation import ModelEvaluation
 
 class FeatureImportance:
     def __init__(self):

@@ -12,35 +12,43 @@
 # 多任务的LSTM未实现 注意力机制等 / cnn的单独训练
 # 测试集小(保证连续）可能会导致测试集的指标不好，因为回测的数据代表性不足，分布不一致等
 # 处理缺失增加自定义函数 'custom':{'columns':[],'func':partial()}, 目前是类
-from utils.tensorflow_config import TensorFlowConfig
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from training.neural_network_controller import TimeSeriesEstimator
-from trained.model_postprocessor import TimeSeriesPostProcessor, MetricsCalculator
-from pipelines.preprocess_pipeline import CompletePreprocessor
-from data.data_preprocessing import TimeSeriesSplitter, SplitByTimepoints
-from data.data_preparation import (DataLoader, DescribeData, RemoveDuplicates, DeleteUselessCols, ProblemColumnsFixed,
-                                   SpecialColumnsFixed, CheckExtreFeatures,
-                                   NumericOutlierProcessor, detect_, handle_,
-                                   CategoricalOutlierProcessor, NumericMissingValueHandler,
-                                   CategoricalMissingValueHandler,
-                                   ColumnsTypeIdentify,
-                                   ConvertCategoricalColumns,
-                                   ConvertNumericColumns, ProcessTimeseriesColumns, ProcessContinuous,
-                                   StatisticsOutlierDetector, RemoveNanHandler, HistNanHandler)
-from data.data_preprocessing import SimpleTimeSampler
-from data.feature_engineering import (WeatherGenerationFromNumeric, GenerationFromTimeseries, BasedOnCorrSelector,
-                                      UnifiedFeatureScaler, OrdinalCategoricalEncoder,
-                                      CustomTransformer)
-from data.exploration import VisualizationForNeural
-from deployment import DeploymentManager
-# from predictor import TrainedModelPredictor
 import logging.config
 from logging_config import LOGGING_CONFIG
 import logging
 
 logger = logging.getLogger(__name__)
+
+from src.data.data_preprocessing.data_splitting import TimeSeriesSplitter, SplitByTimepoints
+from src.data.data_preprocessing.data_sampling import SimpleTimeSampler
+from src.data.exploration import VisualizationForNeural
+from src.data.data_preparation.load_data import DataLoader
+from src.data.data_preparation.describe_data import DescribeData
+from src.data.data_preparation.remove_duplicates import RemoveDuplicates
+from src.data.data_preparation.delete_cols import DeleteUselessCols
+from src.data.data_preparation.fix_problem_cols import ProblemColumnsFixed,SpecialColumnsFixed
+from src.data.data_preparation.check_extre_numeric_features import CheckExtreFeatures
+from src.data.data_preparation.handle_extre_numeric_features import StatisticsOutlierDetector,NumericOutlierProcessor, detect_, handle_
+from src.data.data_preparation.handle_extre_categorical_features import CategoricalOutlierProcessor
+from src.data.data_preparation.handle_missing_values import  NumericMissingValueHandler,CategoricalMissingValueHandler
+from src.data.data_preparation.identify_cols_type import ColumnsTypeIdentify
+from src.data.data_preparation.convert_categorical_features import ConvertCategoricalColumns
+from src.data.data_preparation.convert_numeric_features import ConvertNumericColumns
+from src.data.data_preparation.analyze_time_series_gaps import ProcessTimeseriesColumns, ProcessContinuous
+from src.data.data_preparation.handle_missing_values import RemoveNanHandler, HistNanHandler
+from src.data.feature_engineering.feature_generation_from_numeric import WeatherGenerationFromNumeric
+from src.data.feature_engineering.feature_generation_from_timecol import GenerationFromTimeseries
+from src.data.feature_engineering.feature_selection import BasedOnCorrSelector
+from src.data.feature_engineering.feature_scaling import UnifiedFeatureScaler
+from src.data.feature_engineering.feature_encoding import OrdinalCategoricalEncoder
+from src.data.feature_engineering.feature_transformer import CustomTransformer
+from src.deployment.model_deployer import DeploymentManager
+from src.utils.tensorflow_config import TensorFlowConfig
+from src.training.neural_network_controller import TimeSeriesEstimator
+from src.trained.model_postprocessor import TimeSeriesPostProcessor, MetricsCalculator
+from src.pipelines.preprocess_pipeline import CompletePreprocessor
 
 
 def main():

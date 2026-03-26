@@ -9,15 +9,16 @@ import numpy as np
 from pydantic.v1 import validate_arguments
 from pydantic import Field
 from sklearn.utils.validation import check_is_fitted
-from data.decorator import validate_input
-from evaluation.model_feature_importance import FeatureImportance
-from models.cnn import MultiTasksCnnModel
-from models.lstm import SingleTaskLstmModel, MultiTasksLstmModel
-from training.training_models import TrainingSingleModel, TrainingMultiModel
-
-from data.windows import EnhancedWindowGenerator
-from evaluation.model_evaluation import ModelEvaluation
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
+
+from src.data.decorator import validate_input
+from src.evaluation.model_feature_importance import FeatureImportance
+from src.models.cnn import MultiTasksCnnModel
+from src.models.lstm import SingleTaskLstmModel, MultiTasksLstmModel
+from src.training.training_models import TrainingSingleModel, TrainingMultiModel
+
+from src.data.windows import EnhancedWindowGenerator
+from src.evaluation.model_evaluation import ModelEvaluation
 
 import tensorflow as tf
 

@@ -9,9 +9,9 @@ from pydantic import BaseModel, field_validator, model_validator, Field
 from sklearn.pipeline import Pipeline
 import logging
 
-from data import BaseCleaner
-from data.data_preparation.remove_duplicates import RemoveDuplicates
-from data.feature_engineering import UnifiedFeatureScaler
+from src.data.basecleaner import BaseCleaner
+from src.data.data_preparation.remove_duplicates import RemoveDuplicates
+from src.data.feature_engineering.feature_scaling import UnifiedFeatureScaler
 
 logger = logging.getLogger(__name__)
 

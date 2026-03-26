@@ -1,11 +1,8 @@
 import os
 import argparse
-import sys
 
-# 添加项目根目录到路径
-# sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from src.data.data_preparation import DataLoader
-from predictor import TrainedModelPredictor
+from src.data.data_preparation.load_data import DataLoader
+from src.predictor.model_predictor import TrainedModelPredictor
 
 import logging
 logger = logging.getLogger(__name__)

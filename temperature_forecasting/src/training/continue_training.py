@@ -1,8 +1,5 @@
 from typing import Union
 from utils.tensorflow_config import TensorFlowConfig
-from models import MultiTasksLstmModel, MultiTasksCnnModel, SingleTaskLstmModel
-from training.training_models import CustomCheckpointCallback, CosineAnnealingWarmRestarts, \
-    ContinueCosineAnnealing, compile_for_continue, ForceLRCallback
 import tensorflow as tf
 import re
 import cloudpickle
@@ -13,6 +10,11 @@ import logging
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+from src.models.cnn import  MultiTasksCnnModel
+from src.models.lstm import  MultiTasksLstmModel,SingleTaskLstmModel
+from src.training.training_models import CustomCheckpointCallback, CosineAnnealingWarmRestarts, \
+    ContinueCosineAnnealing, compile_for_continue, ForceLRCallback
+
 
 
 def continue_training(
