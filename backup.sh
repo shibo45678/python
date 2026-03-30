@@ -27,7 +27,7 @@ if ! git diff --cached --quiet; then
 
     # 3. 推送到 GitHub
     echo "正在推送到 GitHub..."
-    git push origin main 2>&1 | grep -v "Everything up-to-date"
+    git push origin main
 
     if [ $? -eq 0 ]; then
         echo "备份成功！"
