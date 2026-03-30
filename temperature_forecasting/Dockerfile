@@ -17,11 +17,12 @@ COPY src ./src
 COPY deployment_test.py .
 COPY data  ./data
 
+#  将 /app 添加到 Python 模块搜索路径
+ENV PYTHONPATH=/app
+
 # 5. 入口脚本（可执行程序）
 ENTRYPOINT ["python","/app/deployment_test.py"]
 
 # 6. 指定容器启动时运行的命令（参数传递 脚本绝对路径）
-CMD ["--input", "/app/data/raw/latest_data.csv",\
-"--deployment_path", "/app/deployment_package",\
-"--model_name", "single_lstm1",\
-"--stage_num", "0"]
+#CMD ["--help"]
+

@@ -168,7 +168,6 @@ class TimeSeriesPostProcessor:
             elif target_column in other_transformer.valid_power_columns_:  # batch, output_width
                 result = other_transformer.custom_inverse_transform(transformed_data=result,
                                                                     target_column=target_column, transform_type='power')
-
             else:
                 logger.debug(f"目标列{target_column}不需要powertransform/asinh等逆转换")
 
@@ -232,10 +231,8 @@ class TimeSeriesPostProcessor:
             elif target_column in other_transformer.valid_power_columns_:  # batch, output_width
                 result = other_transformer.custom_inverse_transform(transformed_data=result,
                                                                     target_column=target_column, transform_type='power')
-
             else:
                 logger.debug(f"目标列{target_column}不需要powertransform/asinh等逆转换")
-
         else:
             logger.debug(f"目标列{target_column}为空")
 
@@ -243,7 +240,7 @@ class TimeSeriesPostProcessor:
         return result
 
     def add_timestamps(self, predictions: Dict, historical_timestamps, input_width: int, output_width: int, shift: int,
-                       freq: str,save_path,mode ='train'):
+                       freq: str, save_path, mode='train'):
         """
         参数:
             predictions:接收 逆转换处理过的predictions字典 ，值是array
@@ -259,7 +256,7 @@ class TimeSeriesPostProcessor:
         if mode == 'train':
             # 训练窗口数（有真实标签的） len -total_window + 1 =1548 - 34 +1 =1515
             n_windows = len(historical_timestamps) - (input_width + shift + output_width - 1) + 1
-        else :
+        else:
             # 预测样本数（只需要输入，没有滑动）
             n_windows = len(historical_timestamps) - (input_width) + 1
 
@@ -283,8 +280,7 @@ class TimeSeriesPostProcessor:
         logger.debug(f"最后一个: {window_start_times[-1]}")
         logger.debug(f"应该是: ({historical_timestamps.iloc[-5]} - 24h)")
 
-        return self._create_result_df(predictions, window_start_times, future_timestamps,save_path)
-
+        return self._create_result_df(predictions, window_start_times, future_timestamps, save_path)
 
     def _generate_future_timestamps(self, last_time, n_steps: int, freq: str, shift: int):
         # 将 shift=24 时间步* 毎步间隔1小时= 转换为时间增量24小时，并确保单位与 freq 1h 的小时匹配
@@ -314,8 +310,7 @@ class TimeSeriesPostProcessor:
         start = last_time + time_shift
         return pd.date_range(start=start, periods=n_steps, freq=freq)
 
-
-    def _create_result_df(self, predictions, window_start_times: list, future_timestamps: list,save_path:str ):
+    def _create_result_df(self, predictions, window_start_times: list, future_timestamps: list, save_path: str):
         """单任务和多任务区分（单：1个数组，多：每个元素是一个任务的输出
             df三列：开始时间、预测时间列、任务1，任务2"""
 
@@ -348,16 +343,9 @@ class TimeSeriesPostProcessor:
         logger.debug(f"CSV文件预览:")
         logger.debug(results_df.tail(10))
 
-        results_df.to_csv(save_path,index=False)
+        results_df.to_csv(save_path, index=False)
 
         return results_df, predictions
-
-
-
-
-
-
-
 
     def calculate_mape(self, pred_data: pd.DataFrame, original_data: pd.DataFrame):
 
@@ -375,6 +363,7 @@ class TimeSeriesPostProcessor:
             how='left',
         )
         logger.debug(f"合并后的数据是{combined.tail(10)}")
+        combined.to_csv(f"/Users/shibo/AL/NeuralNetwork/temperature_forecasting/data/final/true_pred.csv")
 
         # 逐时间步
         step_res = MetricsCalculator.calc_every_pair(data=combined, task_names=task_names)
@@ -526,7 +515,14 @@ class MetricsCalculator:
 
                     time_point = historical_timestamps[target_idx]
                     if target_idx < len(historical_timestamps):
-                        predictions_by_time[time_point].append(pred_value)
+                        if isinstance(pred_value, np.ndarray):
+                            if pred_value.ndim != 1:
+                                raise ValueError(f"期望1D数组，但shape{pred_value.shape}")
+                            pred = np.float64(pred_value.item())
+                        else:
+                            pred = np.float64(pred_value)
+
+                        predictions_by_time[time_point].append(pred)
 
             result[tk] = predictions_by_time
 
@@ -561,6 +557,7 @@ class MetricsCalculator:
                            time_column: str = None,
                            level: str = 'o'):
         """""""""
+        A.还原业务mae level='operational'
         B.技术指标 MSE MAE：
           仍然是[标准化]的 predictions_by_time 字典
           最基本的计算单元是每个预测值与其对应实际值的比较(标准化状态下的）。
@@ -572,17 +569,26 @@ class MetricsCalculator:
                                                                     shift=shift, time_column=time_column)
 
         result_mae_mse = {}
-        result_mae={}
-        for tk, pred in predictions_by_time.items():  # pairs 是时间点明细
-            MAE, MSE, RMSE, pairs, mae_mse_ = MetricsCalculator._calc_hierarchical_mae_mse(pred,
-                                                                                           actual_data,
-                                                                                           level, tk)
-            logger.info(f'任务{tk}整体数据的MAE：{MAE},MSE:{MSE},RMSE:{RMSE}（基于基础对的计算）')
+        result_mae = {}
 
-            result_mae_mse[tk] = mae_mse_
-            result_mae[tk]=MAE
+        if level == 'operational':
+            for tk, pred in predictions_by_time.items():  # pairs 是时间点明细
+                MAE, MSE, RMSE = MetricsCalculator._calc_hierarchical_mae_mse(pred, actual_data, tk,
+                                                                              level='operational')
+                logger.info(f"业务解释 任务{tk}(整体数据) --  mae_original：{MAE:.6f} (基础对）")
+                result_mae[tk] = MAE
+            return result_mae
 
-        return result_mae_mse,result_mae
+        else:
+            for tk, pred in predictions_by_time.items():
+                MAE, MSE, RMSE, pairs, mae_mse_ = MetricsCalculator._calc_hierarchical_mae_mse(pred, actual_data, tk,
+                                                                                               level='o')
+                logger.info(f'模型拟合指标 任务{tk}(整体数据) --  MAE：{MAE:.6f},MSE:{MSE:.6f},RMSE:{RMSE:.6f}（基础对）')
+
+                result_mae_mse[tk] = mae_mse_
+                result_mae[tk] = MAE
+
+            return result_mae_mse, result_mae
 
     @staticmethod
     def download_data(result_mae_mse: Dict, result_mape: Dict, level_mae_mse: str, level_mape: str):
@@ -629,7 +635,7 @@ class MetricsCalculator:
                 mape_pattern_high_error_count = mape_pattern.get('count', 0)
                 mape_pattern_high_error_rate = mape_pattern.get('error_rate', 0)
                 logger.debug(
-                    f"mape计算出的>50的高异常值，数量{mape_pattern_high_error_count}，占比：{mape_pattern_high_error_rate}")
+                    f"{tk}_smape计算出的>50的高异常值，数量{mape_pattern_high_error_count}，占比：{mape_pattern_high_error_rate}")
 
                 sheet_data = {
                     'mape': mape,
@@ -652,7 +658,7 @@ class MetricsCalculator:
         # 整个数据集mape
         MAPE = MetricsCalculator._calc_dataset_mape(pre_dict=predictions_by_time, actual_data=actual_data, tk=tk,
                                                     time_col=time_column)
-        logger.info(f"整体数据集（基础对的ape均值）的sMAPE：{MAPE}")
+        logger.info(f"业务解释 任务{tk}(整体数据) -- smape: {MAPE:.6f} (基础对ape均值）")
 
         # 3.1 mape: add 时间点维度
         if level.lower() == 'o':
@@ -663,12 +669,17 @@ class MetricsCalculator:
                      f'{tk}_pred': np.mean(preds)
                      }
                 )
+                # pred = np.array(preds, dtype='float64')
+                # if np.any(pred > 1e+3):
+                #     logger.warning(f"{time_point}_pred中存在异常{pred}")
+
             avg_predictions_df = pd.DataFrame(avg_timepoint_predictions).set_index('timestamp')
+
             timepoint_actual_data = actual_data.set_index(time_column)
 
             timepoint_mape, timepoint_details = MetricsCalculator.calc_mape(avg_predictions_df,
                                                                             timepoint_actual_data[tk])
-            logger.info(f"原始粒度（时间点ape的均值）smape_o：{timepoint_mape}")
+            logger.info(f"业务解释 任务{tk}(原始粒度) -- smape_o:{timepoint_mape:.6f}(时间点ape均值）")
             timepoint_analyze = MetricsCalculator.analyze_mape(details=timepoint_details)
 
             result = {
@@ -721,7 +732,7 @@ class MetricsCalculator:
             level_mape, level_details = MetricsCalculator.calc_mape(level_prediction_data, level_actual_data[tk])
             daily_analyze = MetricsCalculator.analyze_mape(details=level_details)
 
-            logger.info(f"该{level}级别(ape的均值）的smape_{level}:{level_mape}")
+            logger.info(f"业务解释 任务{tk}({level}级别) -- smape_{level}:{level_mape:.6f}(时间点ape均值）")
             result = {
                 f'details_{level}': level_details,
                 f'mape_analyze_{level}':
@@ -741,15 +752,27 @@ class MetricsCalculator:
         for i, (time_point, pred_list) in enumerate(pre_dict.items()):
             actual = actual_data.loc[time_point]
 
+            # pred = np.array(pred_list, dtype='float64')
+            # if np.any(pred > 1e+3):
+            #     logger.warning(f"{time_point}_pred中存在异常{pred}")
+
             for pred in pred_list:
-                ape = abs(pred - actual) / ((abs(actual) + abs(pred)) / 2) * 100
+                denominator = (abs(actual) + abs(pred)) / 2
+                eps = 1e-8
+                if denominator < eps:
+                    ape = 0
+                else:
+                    ape = abs(pred - actual) / denominator * 100
                 pairs_res.append(ape)
+
+                if pred > 1e+8:
+                    print(f"time{time_point}:pred{pred},actual{actual}")
 
         MAPE = np.mean(pairs_res)
         return MAPE
 
     @staticmethod
-    def _calc_hierarchical_mae_mse(predictions_by_time: Dict, actual_data, level: str, tk: str):
+    def _calc_hierarchical_mae_mse(predictions_by_time: Dict, actual_data, tk: str, level: str):
         """ 标准化数据
         predictions_by_time: {时间点索引: [该时间点的所有预测值]}
         actual_data: 原数据DF，每个时间点的实际值
@@ -765,6 +788,7 @@ class MetricsCalculator:
                 for pred in pred_list:
                     abs_error = abs(pred - actual)
                     squared_error = (pred - actual) ** 2
+
                     pairs_res.append(
                         {'timepoint': time_point,
                          'abs_error': abs_error,
@@ -773,23 +797,30 @@ class MetricsCalculator:
 
         pairs_df = pd.DataFrame(pairs_res)
 
-        if level.lower() == 'o':
-            pairs_df = pairs_df.rename(columns={'timepoint': 'level'})
-        elif level.lower() == 'd':
-            pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[D]')
-        elif level.lower() == 'm':
-            pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[M]')
-        else:
-            pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[Y]')
-
-        hierarchical_metrics = pairs_df.groupby('level').agg(mae=('abs_error', 'mean'),  # mae
-                                                             mse=('squared_error', 'mean'),
-                                                             rmse=('squared_error', lambda x: np.sqrt(x.mean())  # rmse
-                                                                   ))
+        # 整体数据集
         MAE = pairs_df['abs_error'].mean()
         MSE = pairs_df['squared_error'].mean()
         RMSE = np.sqrt(MSE)
-        return MAE, MSE, RMSE, pairs_df, hierarchical_metrics
+
+        if level.lower() == 'operational':  # 进业务计算，后续不用计算
+            return MAE, MSE, RMSE
+
+        else:
+            if level.lower() == 'o':
+                pairs_df = pairs_df.rename(columns={'timepoint': 'level'})
+            elif level.lower() == 'd':
+                pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[D]')
+            elif level.lower() == 'm':
+                pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[M]')
+            else:
+                pairs_df['level'] = pairs_df['timepoint'].values.astype('datetime64[Y]')
+
+            hierarchical_metrics = pairs_df.groupby('level').agg(mae=('abs_error', 'mean'),  # mae
+                                                                 mse=('squared_error', 'mean'),
+                                                                 rmse=('squared_error', lambda x: np.sqrt(x.mean())
+                                                                       # rmse
+                                                                       ))
+            return MAE, MSE, RMSE, pairs_df, hierarchical_metrics
 
     @staticmethod
     def calc_mape(handled_pred: pd.DataFrame, handled_actual: pd.Series):
@@ -817,7 +848,7 @@ class MetricsCalculator:
 
         detailed_results['level_ape'] = np.nan
 
-        ape_values = np.abs(actual[mask] - avg_pred[mask]) / ((np.abs(actual[mask])+ np.abs(avg_pred[mask]))/2) * 100
+        ape_values = np.abs(actual[mask] - avg_pred[mask]) / ((np.abs(actual[mask]) + np.abs(avg_pred[mask])) / 2) * 100
         detailed_results.loc[mask, 'level_ape'] = ape_values
 
         # 计算有效ape的平均，不能先求和再计算

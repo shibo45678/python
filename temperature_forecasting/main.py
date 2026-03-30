@@ -16,6 +16,9 @@ import copy
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import logging.config
+
+import pandas as pd
+
 from logging_config import LOGGING_CONFIG
 import logging
 
@@ -28,11 +31,12 @@ from src.data.data_preparation.load_data import DataLoader
 from src.data.data_preparation.describe_data import DescribeData
 from src.data.data_preparation.remove_duplicates import RemoveDuplicates
 from src.data.data_preparation.delete_cols import DeleteUselessCols
-from src.data.data_preparation.fix_problem_cols import ProblemColumnsFixed,SpecialColumnsFixed
+from src.data.data_preparation.fix_problem_cols import ProblemColumnsFixed, SpecialColumnsFixed
 from src.data.data_preparation.check_extre_numeric_features import CheckExtreFeatures
-from src.data.data_preparation.handle_extre_numeric_features import StatisticsOutlierDetector,NumericOutlierProcessor, detect_, handle_
+from src.data.data_preparation.handle_extre_numeric_features import StatisticsOutlierDetector, NumericOutlierProcessor, \
+    detect_, handle_
 from src.data.data_preparation.handle_extre_categorical_features import CategoricalOutlierProcessor
-from src.data.data_preparation.handle_missing_values import  NumericMissingValueHandler,CategoricalMissingValueHandler
+from src.data.data_preparation.handle_missing_values import NumericMissingValueHandler, CategoricalMissingValueHandler
 from src.data.data_preparation.identify_cols_type import ColumnsTypeIdentify
 from src.data.data_preparation.convert_categorical_features import ConvertCategoricalColumns
 from src.data.data_preparation.convert_numeric_features import ConvertNumericColumns
@@ -122,6 +126,18 @@ def main():
 
     }
 
+    # 1. 加载数据
+    loader = DataLoader(input_files=['data_climate.csv'], pattern="new_*.csv", data_dir='data/raw')
+    raw_data = loader.learn_process()
+
+    # 2. 数据集分割流水线（数据质量：调整时间序列的连续性 + 历史数据填充大片时间序列 + 数据集分割）
+    data_split_configs = [
+        {'obj_list': [RemoveDuplicates(pass_through=False),
+                      ProcessContinuous(interactive=False, create_extract_continuous=True)], 'len_change': True},
+        {'obj_list': [HistNanHandler(lookback_years=10, pass_through=False)], 'len_change': False},
+        {'obj_list': [SplitByTimepoints(val_start='2014-01-01 00:10:00', test_start='2016-01-01 00:10:00',
+                                        column_name='Date Time')], 'len_change': True}]
+    # 3. 预处理流水线(生成训练、验证、预测数据)
     preparation_configs = [
         {'obj_list': [DescribeData(), DeleteUselessCols()], 'len_change': False},
         {'obj_list': [RemoveDuplicates(download_config=download_duplicates_config, pass_through=True)],
@@ -168,49 +184,12 @@ def main():
                       ], 'len_change': False},
     ]
 
-    # 1. 加载数据
-    loader = DataLoader(input_files=['data_climate.csv'], pattern="new_*.csv", data_dir='data/raw')
-    raw_data = loader.learn_process()
-
-    # splitter = TimeSeriesSplitter(train_size=0.7, val_size=0.2, test_size=0.1, shuffle=False)
-    # df_train, df_val, df_test = splitter.learn_process(raw_data)
-    # logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
-    #
-    # continuous = ProcessContinuous(interactive=False, create_extract_continuous=True)
-    # df_test_adjust, _ = continuous.learn_process(df_test, y=None)  # 只选择连续的样本集
-
-    #
-    # continuous = ProcessContinuous(interactive=False, create_extract_continuous=True)
-    # raw_data_adjusted,_= continuous.learn_process(raw_data,y=None)
-    # time_col = continuous.valid_time_column_
-    #
-    # remove = RemoveDuplicates(download_config=download_duplicates_config, pass_through=False) # 可能受少量重复影响
-    # raw_data_clean,_ =remove.learn_process(raw_data_adjusted,y=None)
-    #
-    # hist = HistNanHandler(lookback_years=10, time_column=time_col, pass_through=False)
-    # raw_data_filled,_ = hist.learn_process(raw_data_clean,y=None)
-    #
-    # splitter = SplitByTimepoints(val_start='2014-01-01 00:10:00',test_start ='2016-01-01 00:10:00',column_name =time_col)
-    # df_train,df_val,df_test = splitter.learn_process(X=raw_data_filled,y=None)
-    # logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
-
-    # 2. 数据集分割流水线（数据质量：调整时间序列的连续性 + 历史数据填充大片时间序列 + 数据集分割）
-    data_split_configs = [
-        {'obj_list': [
-            ProcessContinuous(interactive=False, create_extract_continuous=False),
-            RemoveDuplicates(pass_through=False),
-            HistNanHandler(lookback_years=10, pass_through=True),
-            SplitByTimepoints(val_start='2014-01-01 00:10:00', test_start='2016-01-01 00:10:00',
-                              column_name='Date Time')
-        ], 'len_change': True}]
-
     splitter = CompletePreprocessor(data_split_configs)
-    splitter.train(features=raw_data, labels=None)
-    (df_train, df_val, df_test), _ = splitter.transform_predict(features=raw_data, labels=None)
+    (df_train, df_val, df_test), _ = splitter.train(features=raw_data, labels=None)
     logger.info(f"训练集数：{len(df_train)}，验证集数:{len(df_val)}，测试集数：{len(df_test)}。")
-    time_col = splitter._get_step(0, 0).valid_time_column_
+    time_col = splitter._get_step(0, 1).valid_time_column_
 
-    # 3. 数据预处理流水线 (生成训练、验证、预测数据）
+
     preprocessor = CompletePreprocessor(preparation_configs)
     features_temp_train, _ = preprocessor.train(features=df_train, labels=None)
 
@@ -230,9 +209,9 @@ def main():
                               'batch_size': 16,
 
                               'units': [256],  # len控制lstm的层数
-                              'return_sequences': [False],
+                              'return_sequences': [False],  # 最后一层才是False,注意与分任务的LSTM衔接
                               'verbose': 2,
-                              'total_epochs': 1,
+                              'total_epochs': 50,
 
                               'early_stop_patience': 15,
                               'check_save_mode': 2,
@@ -313,7 +292,6 @@ def main():
                             ):
         """
         单个模型的训练和预测流程
-
         Args:
             config: 模型配置
             X: 训练数据（字典-训练数据和验证数据）
@@ -362,7 +340,7 @@ def main():
             # 5. 逆标准化/编码（使用后处理器）预测数据 + 原始数据（用于训练的数值列里面的2分类列，未标准化，需要排除掉）
             inverse_predictions = postprocessor.custom_inverse_transform(
                 raw_predictions=raw_predictions,
-                use_saved=True,  # 是否使用【内存】中的preprocessor
+                use_saved=False,  # 是否使用【内存】中的preprocessor
                 task_config=config.get('output_config'),
                 output_width=config.get('output_width'),
                 pipeline_name='pipeline_6',
@@ -370,15 +348,15 @@ def main():
                 transform_step_name='engineer_1')
 
             # 6. 添加时间戳
-            final_pred_results, predictions_dict = postprocessor.add_timestamps(
-                mode = 'train',
+            final_pred_results, inversed_predictions_dict = postprocessor.add_timestamps(
+                mode='train',
                 predictions=inverse_predictions,
                 historical_timestamps=features_temp_test_data_copy[time_column],
                 input_width=config.get('input_width', 6),
                 output_width=config.get('output_width', 5),
                 freq='h',
                 shift=config.get('shift', 0),
-                save_path = '/Users/shibo/AL/NeuralNetwork/temperature_forecasting/data/final/all_predictions.csv'
+                save_path='/Users/shibo/AL/NeuralNetwork/temperature_forecasting/data/final/all_predictions.csv'
             )
 
             logger.info(f"模型 {model_name} 训练成功")
@@ -394,23 +372,32 @@ def main():
             logger.debug(f"预测结果和原数据合并表：{step_mape.tail(10)}")
 
             # 逐时间点timepoint / 各级别 mape mse mae
-            smape_dict = MetricsCalculator.smape_calculator(predictions=predictions_dict,  # 逆标准化数据
+            # 模型解释mae(模型拟合程度)
+            mae_mse_dict, mae_dict = MetricsCalculator.mae_mse_calculator(predictions=raw_predictions,  # 注意是标准化数据
+                                                                          actual_data=features_temp_test_data_copy.copy(),
+                                                                          # 标准化后的原数据（模型计算mae方式）
+                                                                          input_width=config.get('input_width'),
+                                                                          shift=config.get('shift'), level='o',
+                                                                          time_column=config.get('time_column',
+                                                                                                 'Date Time'))
+            # 业务解释smape
+            smape_dict = MetricsCalculator.smape_calculator(predictions=inversed_predictions_dict,  # 逆标准化数据
                                                             actual_data=original_data_no_scaled.copy(),  # 原数据
                                                             input_width=config.get('input_width'),
                                                             shift=config.get('shift'), level='o',
                                                             # o:original 原始数据时间粒度（单时间点级别）/‘D’  日级别 ‘M’月级别
                                                             time_column=config.get('time_column', 'Date Time'))
 
-            mae_mse_dict, mae_dict = MetricsCalculator.mae_mse_calculator(predictions=raw_predictions,  # 注意是标准化数据
-                                                                          actual_data=features_temp_test_data_copy.copy(),
-                                                                          # 标准化原数据
-                                                                          input_width=config.get('input_width'),
-                                                                          shift=config.get('shift'), level='o',
-                                                                          time_column=config.get('time_column',
-                                                                                                 'Date Time'))
-
             MetricsCalculator.download_data(result_mae_mse=mae_mse_dict, result_mape=smape_dict, level_mae_mse='o',
                                             level_mape='o')
+            # 业务解释mae
+            MetricsCalculator.mae_mse_calculator(predictions=inversed_predictions_dict,
+                                                 actual_data=original_data_no_scaled.copy(),
+                                                 # 标准化后的原数据（模型计算mae方式）
+                                                 input_width=config.get('input_width'),
+                                                 shift=config.get('shift'), level='operational',
+                                                 time_column=config.get('time_column',
+                                                                        'Date Time'))
 
             # 8. 保存状态
             predict_window_, predict_window_config = estimator._forecast_window_generator()
@@ -454,7 +441,7 @@ def main():
     trained_models = []
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(train_single_config, config, X=data, y=None, preprocessor=preprocessor,
-                                   original_data_scaled=features_temp_test,  # 预处理后的测试集数据（时间列处理，采样，标准化）
+                                   original_data_scaled=features_temp_test,  # 预处理后的测试集数据（时间列处理，采样，转换、标准化）
                                    original_data_no_scaled=valid_df_test,  # 预处理前的测试集数据（时间列处理，采样）
                                    )
                    for config in configs]

@@ -4,8 +4,10 @@ import random
 import cloudpickle
 import numpy as np
 from contextlib import contextmanager
+
 logger = logging.getLogger(__name__)
 import os
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 0=全部显示, 1=隐藏INFO, 2=隐藏WARNING, 3=隐藏ERROR
 import tensorflow as tf
 
@@ -107,7 +109,7 @@ class TrainingMultiModel:
             tf_checkpoint_stage_dir = os.path.join(match.group(1), f'tf_checkpoints_stage{stage_number}')
             os.makedirs(tf_checkpoint_stage_dir, exist_ok=True)
 
-            manager = SimpleTrainingManager(continue_dir=continue_from,continue_stage=stage_number-1)
+            manager = SimpleTrainingManager(continue_dir=continue_from, continue_stage=stage_number - 1)
             inner_epoch, model_ = manager.load_latest_checkpoint()
 
             # 创建新的编译器
@@ -153,7 +155,7 @@ class TrainingMultiModel:
                                                        check_save_mode=check_save_mode,
                                                        gap_tolerance_ratio=gap_tolerance_ratio,
                                                        min_gap_threshold=min_gap_threshold,
-                                                       total_epochs = total_epochs)
+                                                       total_epochs=total_epochs)
 
         """学习率-固定 ForceLRCallback"""
         force_callback = ForceLRCallback()
@@ -215,7 +217,7 @@ class TrainingMultiModel:
 
 
 class TrainingSingleModel(TrainingMultiModel):
-    def __init__(self, history_plot=False):
+    def __init__(self, history_plot=True):
         super().__init__(history_plot=history_plot)
 
     def training_model(self, model_name: str, trainset, valset,
@@ -278,7 +280,7 @@ class SimpleTrainingManager:
 
     def __init__(self,
                  continue_dir='/Users/shibo/AL/NeuralNetwork/saved_model/multi_lstm2#_20260208_154953/tf_checkpoints_stage0',
-                 continue_stage: int = 0): # 上次
+                 continue_stage: int = 0):  # 上次
 
         self.continue_dir = continue_dir
         self.stage = continue_stage
@@ -293,7 +295,7 @@ class SimpleTrainingManager:
 
         latest_epoch = 0
         latest_checkpoint = None
-        self.continue_dir_ =f"{self.continue_dir}/"
+        self.continue_dir_ = f"{self.continue_dir}/"
 
         for item in os.listdir(self.continue_dir_):
             if item.startswith('epoch_'):
@@ -364,7 +366,7 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
         self.check_save_mode = check_save_mode
         self.min_gap_threshold = min_gap_threshold
         self.gap_tolerance_ratio = gap_tolerance_ratio
-        self.total_epochs=total_epochs
+        self.total_epochs = total_epochs
 
         os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -502,15 +504,16 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
                     self.best_gap = current_gap
                     self.patience_counter = 0
                     logger.debug(
-                        f"微弱改进！保存最佳模型，验证损失:{current_val_loss:.6f}，验证MAE：{current_val_mae:.6f}。"
-                        f"当前gap:{current_gap:.5f} <= 允许gap:{allowed_gap:.5f}")
+                        f"微弱改进！保存最佳模型，验证损失:{current_val_loss:.5f}，"
+                        f"当前gap:{current_gap:.5f} <= 允许gap:{allowed_gap:.5f}"
+                        f"验证MAE：{current_val_mae:.5f} < 最佳MAE：{self.best_val_mae:.5f}")
 
                 else:
                     self.patience_counter += 1
                     logger.debug(
-                        f"跳过保存（gap过大/mae大），patience_counter:{self.patience_counter}/{self.patience}，"
-                        f"当前gap {current_gap:.5f} > 允许gap {allowed_gap:.5f}"
-                        f"当前mae {current_val_mae:.5f} < 最佳mae {self.best_val_mae:.5f}")
+                        f"跳过保存（gap过大 or gap虽微小改进，但mae变高），patience_counter:{self.patience_counter}/{self.patience}，"
+                        f"当前gap {current_gap:.5f} , 允许gap {allowed_gap:.5f}"
+                        f"当前mae {current_val_mae:.5f} , 最佳mae {self.best_val_mae:.5f}")
                     self._check_early_stop(epoch)
             else:
                 self.patience_counter += 1
@@ -558,7 +561,7 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
 
             # 2. 保存为SavedModel格式（用于部署）
             saved_path = os.path.join(checkpoint_epoch_dir,
-                                       f'saved_model_stage{self.stage_number}')  # epoch下面的saved_model文件夹
+                                      f'saved_model_stage{self.stage_number}')  # epoch下面的saved_model文件夹
             self.model.export(saved_path)
 
             # 3. 单独保存模型权重（model.keras已包含权重，此文件为兼容性/迁移学习保留）
@@ -603,7 +606,6 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             #     with open(lr_state_path,'wb') as f:
             #         cloudpickle.dump(lr_schedule_state,f)
 
-
         logger.debug(
             f"\ninner_epoch {epoch}: 保存最佳模型到 {checkpoint_epoch_dir}")
 
@@ -611,13 +613,12 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
 
     def on_train_end(self, logs=None):
         # 训练结束时打印早停信息
-        if self.stopped_epoch > 0 :
+        if self.stopped_epoch > 0:
             logger.info(f"早停于 inner_epoch {self.stopped_epoch}")
             logger.info(
                 f"最佳模型 inner_epoch {self.best_epoch} ,最佳验证损失: {self.best_val_loss:.6f}，最佳验证MAE：{self.best_val_mae} ")
 
             self.get_best_model_path()
-
 
     @contextmanager
     def _suppress_output(self):
@@ -654,7 +655,6 @@ class CustomCheckpointCallback(tf.keras.callbacks.Callback):
             self.best_model_path = os.path.join(pre_path, f'tf_checkpoints_stage{pre_stage}',
                                                 f'epoch_{self.initial_epoch - 1}')
             logger.info(f"本次训练没有生成最佳模型，最佳模型仍然是：上期{self.best_model_path}")
-
 
 
 class CosineAnnealingWarmRestarts(tf.keras.callbacks.Callback):
@@ -801,18 +801,18 @@ class ForceLRCallback(tf.keras.callbacks.Callback):
         # 关键，修改现有优化器的学习率
         try:
             self.model.optimizer.learning_rate.assign(target_lr)
-            logger.debug(f"Epoch_{epoch+1}: 强制设置LR = {target_lr:.2e}")
+            logger.debug(f"Epoch_{epoch + 1}: 强制设置LR = {target_lr:.2e}")
 
         except Exception as e:
             logger.debug(f"ForceLRCallback训练过程中，无法修改学习率: {e}")
 
-    def on_epoch_end(self,epoch,logs=None):
+    def on_epoch_end(self, epoch, logs=None):
         # 进度条加学习率
-        logs = logs or {} # logs 是 Keras 内部维护的一个字典
+        logs = logs or {}  # logs 是 Keras 内部维护的一个字典
 
-        current_lr = self.model.optimizer.learning_rate # 不同优化器获取学习率方式可能不同
+        current_lr = self.model.optimizer.learning_rate  # 不同优化器获取学习率方式可能不同
         # 获取到的是张量或变量（调度器对象本身）要变成 数值numpy()
-        if hasattr(current_lr,'numpy'):
+        if hasattr(current_lr, 'numpy'):
             current_lr = current_lr.numpy()
         logs['learning_rate'] = current_lr
 

@@ -210,11 +210,11 @@ class DeploymentManager:
                         statistics[col].append({
                             'std': scaler.scale_.tolist()
                         })
-                        if col in mae_dict.keys():
-                            mae_scaled = mae_dict.get(col)[0]
-                            logger.info(f"label {col}列:"
-                                        f"MAE_original = MAE_standard {mae_scaled:.5f} * train_std {scaler.scale_.tolist()[0]:.5f}"
-                                        f" = {mae_scaled * scaler.scale_.tolist()[0]:.5f}")
+                        # if col in mae_dict.keys():
+                        #     mae_scaled = mae_dict.get(col)[0]
+                        #     logger.info(f"label {col}列:"
+                        #                 f"MAE_original = MAE_standard {mae_scaled:.5f} * train_std {scaler.scale_.tolist()[0]:.5f}"
+                        #                 f" = {mae_scaled * scaler.scale_.tolist()[0]:.5f}")
 
                 elif method == 'minmax':
                     if hasattr(scaler, 'data_min_'):
@@ -229,14 +229,14 @@ class DeploymentManager:
                     if hasattr(scaler, 'data_range_'):
                         statistics[col].append(
                             {'data_range': scaler.data_range_.tolist()})
-                        if col in mae_dict.keys():
-                            mae_scaled = mae_dict.get(col)[0]
-                            if hasattr(scaler,'feature_range'):
-                                a=scaler.feature_range[0]
-                                b=scaler.feature_range[1]
-                                logger.info(f"label {col}列:"
-                                            f"MAE_original = MAE_minmax {mae_scaled:.5f} * train_minmax {scaler.data_range_.tolist()[0]:.5f} / (b-a) ({b}-{a})"
-                                            f" = {mae_scaled * scaler.scale_.tolist()[0] / (b-a) :.5f}")
+                        # if col in mae_dict.keys():
+                        #     mae_scaled = mae_dict.get(col)[0]
+                        #     if hasattr(scaler,'feature_range'):
+                        #         a=scaler.feature_range[0]
+                        #         b=scaler.feature_range[1]
+                        #         logger.info(f"label {col}列:"
+                        #                     f"MAE_original = MAE_minmax {mae_scaled:.5f} * train_max-min {scaler.data_range_.tolist()[0]:.5f} / (b-a) ({b}-{a})"
+                        #                     f" = {mae_scaled * scaler.scale_.tolist()[0] / (b-a) :.5f}")
 
                 elif method == 'robust':
                     if hasattr(scaler, 'center_'):  # median
@@ -245,11 +245,11 @@ class DeploymentManager:
                     if hasattr(scaler, 'scale_'):  # iqr
                         statistics[col].append({'scale': scaler.scale_.tolist()}) # Iqr
 
-                        if col in mae_dict.keys():
-                            mae_scaled = mae_dict.get(col)[0]
-                            logger.info(f"label {col}列:"
-                                        f"MAE_original = MAE_robust {mae_scaled:.5f} * train_iqr {scaler.scale_.tolist()[0]:.5f}"
-                                        f" = {mae_scaled * scaler.scale_.tolist()[0]:.5f}")
+                        # if col in mae_dict.keys():
+                        #     mae_scaled = mae_dict.get(col)[0]
+                        #     logger.info(f"label {col}列:"
+                        #                 f"MAE_original = MAE_robust {mae_scaled:.5f} * train_iqr {scaler.scale_.tolist()[0]:.5f}"
+                        #                 f" = {mae_scaled * scaler.scale_.tolist()[0]:.5f}")
 
 
                 elif method == 'manual_robust':  # 非标 标准化  <=4 分母的iqr替换成std
@@ -262,12 +262,12 @@ class DeploymentManager:
                         statistics[col].append({
                             'std': stats.std.tolist()}
                         )
-                        if col in mae_dict.keys():
-                            mae_scaled = mae_dict.get(col)[0]
-                            logger.info(
-                                f"label {col}列:"
-                                f"MAE_original = MAE_manual_robust {mae_scaled:.5f} * train_std {stats.std.tolist()[0]:.5f}"
-                                f" = {mae_scaled * stats.std.tolist()[0]:.5f}")
+                        # if col in mae_dict.keys():
+                        #     mae_scaled = mae_dict.get(col)[0]
+                        #     logger.info(
+                        #         f"label {col}列:"
+                        #         f"MAE_original = MAE_manual_robust {mae_scaled:.5f} * train_std {stats.std.tolist()[0]:.5f}"
+                        #         f" = {mae_scaled * stats.std.tolist()[0]:.5f}")
 
 
 

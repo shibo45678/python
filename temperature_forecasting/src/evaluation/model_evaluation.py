@@ -55,7 +55,7 @@ class ModelEvaluation:
         # 绘制预测效果
         if hasattr(window, 'enhanced_window_plot'):
             window.enhanced_window_plot(model=model, model_name=self.model_name, dataset=dataset,
-                                        save_path='~/Python/NeuralNetwork/temperature_forecasting/data/pics')  # 使用已训练好的模型，拿训练集的example直接预测看结果
+                                        save_path='~/AL/NeuralNetwork/temperature_forecasting/data/pics')  # 使用已训练好的模型，拿训练集的example直接预测看结果
 
         # 评估模型
         # 分别适配多任务和单任务
